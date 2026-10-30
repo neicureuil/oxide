@@ -275,6 +275,43 @@ async fn roster_lookups_share_the_directory_and_keep_only_members() {
     assert_eq!(details.roster_version, Some(serde_json::json!(3)));
     assert_eq!(app.chats[0].title(), Some("Projet"));
 }
+#[tokio::test]
+async fn a_failed_roster_lookup_is_asked_again_a_minute_later() {
+    let (mut app, _) = App::boot(true);
+    *app.chats =
+        vec![serde_json::from_value(serde_json::json!({"id": "g", "chatType": "chat"})).unwrap()];
+    drop(app.resolve_chats());
+    let _ = app.update(Msg::ChatsResolved(
+        app.generation,
+        conversations::Resolution {
+            attempted: vec!["g".into()],
+            failed: vec!["g".into()],
+            ..Default::default()
+        },
+    ));
+    assert!(app.resolve_chats().0.is_empty(), "not right after the failure");
+    let failed_at = std::time::Instant::now() - Duration::from_secs(61);
+    app.failed_lookups.insert("g".into(), failed_at);
+    assert_eq!(app.resolve_chats().0.len(), 1);
+}
+#[tokio::test]
+async fn a_failed_profile_lookup_is_asked_again_a_minute_later() {
+    let (mut app, _) = App::boot(true);
+    *app.me = "8:orgid:me".into();
+    *app.chats = vec![
+        serde_json::from_value(serde_json::json!({
+            "id": "dm", "isOneOnOne": true,
+            "members": [{"id": "8:orgid:me"}, {"id": "8:orgid:peer"}]
+        }))
+        .unwrap(),
+    ];
+    assert_eq!(app.resolve_people().0.len(), 1);
+    let _ = app.update(Msg::ProfilesLoaded(app.generation, Err(vec!["8:orgid:peer".into()])));
+    assert!(app.resolve_people().0.is_empty(), "not right after the failure");
+    let failed_at = std::time::Instant::now() - Duration::from_secs(61);
+    app.failed_lookups.insert("8:orgid:peer".into(), failed_at);
+    assert_eq!(app.resolve_people().0.len(), 1);
+}
 #[test]
 fn resolved_external_profile_updates_sidebar_without_waiting_for_rosters() {
     let mut app = App::empty();
