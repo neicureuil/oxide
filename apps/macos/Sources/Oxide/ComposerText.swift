@@ -118,8 +118,23 @@ final class ComposerLayoutManager: NSLayoutManager {
 }
 
 final class ComposerTextView: NSTextView {
+    static let automaticSpellingCorrectionKey = "composer.automaticSpellingCorrection"
+
     var formatShortcut: ((String) -> Void)?
     var sendShortcut: (() -> Void)?
+    var preferences = UserDefaults.standard
+
+    /// Applies the choice last made from the Spelling menu: each conversation gets a new composer, which would
+    /// otherwise follow the system setting.
+    func restoreAutomaticSpellingCorrection() {
+        guard let enabled = preferences.object(forKey: Self.automaticSpellingCorrectionKey) as? Bool else { return }
+        isAutomaticSpellingCorrectionEnabled = enabled
+    }
+
+    override func toggleAutomaticSpellingCorrection(_ sender: Any?) {
+        super.toggleAutomaticSpellingCorrection(sender)
+        preferences.set(isAutomaticSpellingCorrectionEnabled, forKey: Self.automaticSpellingCorrectionKey)
+    }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command), [36, 76].contains(event.keyCode), !hasMarkedText() {
             sendShortcut?()

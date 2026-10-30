@@ -5391,6 +5391,14 @@
     "fr": "Vos jetons de connexion restent dans le Trousseau de ce Mac.",
     "en": "Your sign-in tokens stay in this Mac’s Keychain."
   },
+  "ui.spelling_settings.correct_spelling_automatically": {
+    "fr": "Corriger l’orthographe automatiquement",
+    "en": "Correct spelling automatically"
+  },
+  "ui.spelling_settings.correct_spelling_automatically_detail": {
+    "fr": "S’applique à tous les messages que vous écrivez, comme Édition › Orthographe et grammaire.",
+    "en": "Applies to every message you write, like Edit › Spelling and Grammar."
+  },
   "ui.status_menu.1_hour": {
     "fr": "1 heure",
     "en": "1 hour"

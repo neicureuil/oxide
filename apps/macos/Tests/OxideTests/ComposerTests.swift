@@ -78,3 +78,22 @@ extension ComposerTests {
         XCTAssertEqual(input.currentFormat.block, .bullet)
     }
 }
+
+extension ComposerTests {
+    func testAutomaticSpellingCorrectionToggledInOneComposerCarriesToTheNext() {
+        let suite = "ComposerTests.\(name)"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let first = ComposerTextView()
+        first.preferences = preferences
+        first.restoreAutomaticSpellingCorrection()
+        let initial = first.isAutomaticSpellingCorrectionEnabled
+
+        first.toggleAutomaticSpellingCorrection(nil)
+        let next = ComposerTextView()
+        next.preferences = preferences
+        next.restoreAutomaticSpellingCorrection()
+
+        XCTAssertEqual(next.isAutomaticSpellingCorrectionEnabled, !initial)
+    }
+}
