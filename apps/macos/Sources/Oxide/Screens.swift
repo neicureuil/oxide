@@ -261,7 +261,10 @@ struct SettingsScreen: View {
                 case .appearance:
                     SettingsSubpage(title: L("ui.screens.appearance"), back: back) { AppearanceSettingsSection() }
                 case .language:
-                    SettingsSubpage(title: L("ui.screens.language"), back: back) { LanguageSettingsSection() }
+                    SettingsSubpage(title: L("ui.screens.language"), back: back) {
+                        LanguageSettingsSection()
+                        SpellingSettingsSection()
+                    }
                 case .outOfOffice:
                     OutOfOfficePage(back: back)
                 case .audioVideo:
