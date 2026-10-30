@@ -394,6 +394,17 @@ fn a_silent_sign_in_failing_at_launch_falls_back_to_the_sign_in_page() {
         Effect::OpenLogin { url } if url.contains("prompt=select_account")
     )));
 }
+#[tokio::test]
+async fn a_silent_renewal_clears_the_expired_session_banner_and_reloads() {
+    let (mut app, _) = App::boot(true);
+    *app.error = Some("Session Microsoft expirée. Reconnectez-vous.".into());
+    app.resolved_ids.insert("g".into());
+    let task = app.update(Msg::SilentRenewed(app.generation, Ok(None)));
+    assert!(app.error.is_none());
+    assert!(app.resolved_ids.is_empty(), "chats are resolved again");
+    drop(task);
+    assert!(*app.loading_workspace, "the workspace reloads");
+}
 #[test]
 fn signing_out_deletes_the_microsoft_cookies() {
     let mut app = App::empty();
