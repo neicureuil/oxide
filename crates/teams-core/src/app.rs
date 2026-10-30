@@ -1198,7 +1198,8 @@ impl App {
             Msg::SilentRenewed(_, Ok(Some(auth))) => Task::done(Msg::SignedIn(Ok(auth))),
             Msg::SilentRenewed(_, Ok(None)) => {
                 self.renewal_retry = None;
-                Task::none()
+                // Requests refused before the renewal left an error and missing names: start again from a clean state.
+                self.reload_workspace()
             }
             Msg::SilentRenewed(_, Err(_)) => self.silent_failed(),
             Msg::SignInBrowser => {
