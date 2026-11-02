@@ -995,6 +995,22 @@ impl App {
         }
         Task::none()
     }
+    /// Forgets errors and lookups and reloads the chats, teams, open feed and own profile.
+    fn reload_workspace(&mut self) -> Task<Msg> {
+        *self.participants_notice = None;
+        self.resolved_ids.clear();
+        self.failed_lookups.clear();
+        self.details.clear();
+        *self.error = None;
+        self.channels_loaded.clear();
+        self.channel_errors.clear();
+        self.members_errors.clear();
+        Task::batch([
+            self.load_workspace(),
+            self.load_feed(false),
+            self.load_my_profile(),
+        ])
+    }
     /// Periodic refresh; with a live push channel it only redraws the time, and coming to the front reloads the open conversation.
     fn tick(&mut self, foreground: bool) -> Task<Msg> {
         let renewal = self.renew_if_due();
@@ -1182,7 +1198,8 @@ impl App {
             Msg::SilentRenewed(_, Ok(Some(auth))) => Task::done(Msg::SignedIn(Ok(auth))),
             Msg::SilentRenewed(_, Ok(None)) => {
                 self.renewal_retry = None;
-                Task::none()
+                // Requests refused before the renewal left an error and missing names: start again from a clean state.
+                self.reload_workspace()
             }
             Msg::SilentRenewed(_, Err(_)) => self.silent_failed(),
             Msg::SignInBrowser => {
@@ -1359,20 +1376,7 @@ impl App {
                     }
                     _ => Task::none(),
                 };
-                *self.participants_notice = None;
-                self.resolved_ids.clear();
-                self.failed_lookups.clear();
-                self.details.clear();
-                *self.error = None;
-                self.channels_loaded.clear();
-                self.channel_errors.clear();
-                self.members_errors.clear();
-                Task::batch([
-                    files,
-                    self.load_workspace(),
-                    self.load_feed(false),
-                    self.load_my_profile(),
-                ])
+                Task::batch([files, self.reload_workspace()])
             }
             Msg::Navigate(nav) => {
                 if nav == Nav::Activity && *self.nav != Nav::Activity {
