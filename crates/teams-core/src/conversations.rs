@@ -73,6 +73,8 @@ pub struct Resolution {
     pub chats: Vec<Conversation>,
     pub profiles: Vec<Person>,
     pub attempted: Vec<String>,
+    /// Attempted chats whose roster lookups all failed: worth asking again later.
+    pub failed: Vec<String>,
     pub warning: Option<String>,
 }
 /// What a roster lookup found for a chat (members and properties), reapplied whenever the chat list reloads.
@@ -433,9 +435,10 @@ pub async fn resolve(
             break;
         };
         if let Ok((id, success, chat, errors)) = item {
-            result.attempted.push(id);
+            result.attempted.push(id.clone());
             result.chats.push(chat);
             if !success {
+                result.failed.push(id);
                 failures += 1;
                 for error in errors {
                     if !reasons.contains(&error) {

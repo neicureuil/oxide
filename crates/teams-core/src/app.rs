@@ -298,6 +298,9 @@ pub(crate) struct App {
     details: Tracked<HashMap<String, conversations::ChatDetails>, { feeds::ALL }>,
     resolved_ids: HashSet<String>,
     resolving_chats: bool,
+    /// Chat rosters and people whose lookup failed, by chat id or MRI, with when: asked again after
+    /// `LOOKUP_RETRY`, so a passing outage does not leave generic names for the whole session.
+    failed_lookups: HashMap<String, std::time::Instant>,
     teams: Tracked<Vec<Team>, { feeds::ALL }>,
     teams_problem: Tracked<Option<String>, { feeds::SIDEBAR }>,
     channels_loading: Tracked<HashSet<String>, { feeds::SIDEBAR }>,
@@ -306,7 +309,7 @@ pub(crate) struct App {
     channel_members: Tracked<HashMap<String, Vec<teams_chat::Member>>, { feeds::ALL }>,
     members_loading: Tracked<HashSet<String>, { feeds::COMPOSER_MEMBERS }>,
     members_errors: Tracked<HashMap<String, String>, { feeds::COMPOSER_MEMBERS }>,
-    /// Authors and reactors already looked up in the directory, found or not.
+    /// Authors and reactors looked up in the directory, found or not; a failed lookup leaves for `failed_lookups`.
     profiles_requested: HashSet<String>,
     /// Bots' apps by app id: their catalog name and icon.
     bot_apps: Tracked<HashMap<String, bot_apps::Lookup>, { feeds::ALL }>,
@@ -464,7 +467,8 @@ pub(crate) enum Msg {
     UrlOpened(Result<(), String>),
     MarkRead(Selection, String),
     ReadMarked(u64, Result<(), String>),
-    ProfilesLoaded(u64, Result<Vec<Person>, String>),
+    /// Found people, or the MRIs that could not be looked up.
+    ProfilesLoaded(u64, Result<Vec<Person>, Vec<String>>),
     PresenceLoaded(u64, Result<Vec<Presence>, String>),
 }
 impl App {
@@ -517,6 +521,7 @@ impl App {
             details: Tracked::new(HashMap::new()),
             resolved_ids: HashSet::new(),
             resolving_chats: false,
+            failed_lookups: HashMap::new(),
             teams: Tracked::new(vec![]),
             teams_problem: Tracked::new(None),
             channels_loading: Tracked::new(HashSet::new()),
@@ -774,6 +779,7 @@ impl App {
             details,
             resolved_ids: _,
             resolving_chats: _,
+            failed_lookups: _,
             teams,
             teams_problem,
             channels_loading,
@@ -998,6 +1004,8 @@ impl App {
             self.presence_heartbeat(active),
             self.load_presence(),
             self.refresh_views(foreground),
+            // Rosters that failed are asked again here; people are, after every message.
+            self.resolve_chats(),
         ])
     }
     /// Polls `getpresence` even with push, as the web client polls what Trouter cannot subscribe.
@@ -1353,6 +1361,7 @@ impl App {
                 };
                 *self.participants_notice = None;
                 self.resolved_ids.clear();
+                self.failed_lookups.clear();
                 self.details.clear();
                 *self.error = None;
                 self.channels_loaded.clear();
@@ -1566,7 +1575,15 @@ impl App {
             }
             Msg::ChatsResolved(_, result) => {
                 self.resolving_chats = false;
-                self.resolved_ids.extend(result.attempted);
+                let now = std::time::Instant::now();
+                for id in result.attempted {
+                    self.failed_lookups.remove(&id);
+                    self.resolved_ids.insert(id);
+                }
+                for id in result.failed {
+                    self.resolved_ids.remove(&id);
+                    self.failed_lookups.insert(id, now);
+                }
                 Arc::make_mut(&mut self.profiles).extend(
                     result
                         .profiles
@@ -2290,17 +2307,26 @@ impl App {
                 Task::none()
             }
             Msg::ProfilesLoaded(_, result) => {
-                // A failed lookup only leaves the generic name; it is not worth a banner.
-                if let Ok(people) = result {
-                    Arc::make_mut(&mut self.profiles).extend(
-                        people
-                            .into_iter()
-                            .filter(|p| !p.mri.is_empty())
-                            .map(|p| (p.mri.clone(), p)),
-                    );
-                    for chat in &mut *self.chats {
-                        conversations::resolve_names(chat, &self.profiles);
+                // A failed lookup only leaves the generic name until it is asked again; it is not worth a banner.
+                let people = match result {
+                    Ok(people) => people,
+                    Err(mris) => {
+                        let now = std::time::Instant::now();
+                        for mri in mris {
+                            self.profiles_requested.remove(&mri);
+                            self.failed_lookups.insert(mri, now);
+                        }
+                        return Task::none();
                     }
+                };
+                Arc::make_mut(&mut self.profiles).extend(
+                    people
+                        .into_iter()
+                        .filter(|p| !p.mri.is_empty())
+                        .map(|p| (p.mri.clone(), p)),
+                );
+                for chat in &mut *self.chats {
+                    conversations::resolve_names(chat, &self.profiles);
                 }
                 Task::none()
             }
@@ -2359,6 +2385,7 @@ impl App {
             mri.starts_with("8:")
                 && !mri.eq_ignore_ascii_case(&self.me)
                 && !self.profiles_requested.contains(mri)
+                && !self.lookup_failed_recently(mri)
         };
         // Known participant MRIs resolve as one batch, without waiting for every chat's roster request.
         let participants = self
@@ -2425,13 +2452,19 @@ impl App {
                         client
                             .people_profiles(batch)
                             .await
-                            .map_err(|e| e.to_string())?,
+                            .map_err(|_| wanted.clone())?,
                     );
                 }
                 Ok(people)
             },
             move |r| Msg::ProfilesLoaded(generation, r),
         )
+    }
+    fn lookup_failed_recently(&self, id: &str) -> bool {
+        const LOOKUP_RETRY: Duration = Duration::from_secs(60);
+        self.failed_lookups
+            .get(id)
+            .is_some_and(|at| at.elapsed() < LOOKUP_RETRY)
     }
     fn resolve_chats(&mut self) -> Task<Msg> {
         if self.resolving_chats {
@@ -2444,7 +2477,9 @@ impl App {
             .chats
             .iter()
             .filter(|c| {
-                !self.resolved_ids.contains(&c.id) && conversations::needs_details(c, &self.me)
+                !self.resolved_ids.contains(&c.id)
+                    && !self.lookup_failed_recently(&c.id)
+                    && conversations::needs_details(c, &self.me)
             })
             .collect();
         chats.sort_by_key(|chat| {
