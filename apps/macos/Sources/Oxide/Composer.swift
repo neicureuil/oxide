@@ -345,6 +345,7 @@ private struct DraftEditor: NSViewRepresentable {
         text.isAutomaticLinkDetectionEnabled = true
         text.allowsUndo = true
         text.isContinuousSpellCheckingEnabled = true
+        text.restoreAutomaticSpellingCorrection()
         text.isAutomaticQuoteSubstitutionEnabled = false
         text.textContainerInset = NSSize(width: 0, height: 4)
         text.textContainer?.lineFragmentPadding = 2
