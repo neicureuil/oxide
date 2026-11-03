@@ -3489,6 +3489,10 @@ public struct ConversationView: Equatable, Hashable {
      */
     public var muted: Bool
     /**
+     * The open chat as the chat list shows it, for the same actions; `None` for channels.
+     */
+    public var chat: ChatRow?
+    /**
      * First message from someone else that was unread when the chat was opened.
      */
     public var firstUnread: String?
@@ -3511,6 +3515,9 @@ public struct ConversationView: Equatable, Hashable {
          * Notifications of this chat or channel are off.
          */muted: Bool, 
         /**
+         * The open chat as the chat list shows it, for the same actions; `None` for channels.
+         */chat: ChatRow?, 
+        /**
          * First message from someone else that was unread when the chat was opened.
          */firstUnread: String?, 
         /**
@@ -3529,6 +3536,7 @@ public struct ConversationView: Equatable, Hashable {
         self.isMeeting = isMeeting
         self.canCall = canCall
         self.muted = muted
+        self.chat = chat
         self.firstUnread = firstUnread
         self.presence = presence
         self.avatarShape = avatarShape
@@ -3563,6 +3571,7 @@ public struct FfiConverterTypeConversationView: FfiConverterRustBuffer {
                 isMeeting: FfiConverterBool.read(from: &buf), 
                 canCall: FfiConverterBool.read(from: &buf), 
                 muted: FfiConverterBool.read(from: &buf), 
+                chat: FfiConverterOptionTypeChatRow.read(from: &buf), 
                 firstUnread: FfiConverterOptionString.read(from: &buf), 
                 presence: FfiConverterOptionTypePresenceView.read(from: &buf), 
                 avatarShape: FfiConverterTypeAvatarShape.read(from: &buf)
@@ -3583,6 +3592,7 @@ public struct FfiConverterTypeConversationView: FfiConverterRustBuffer {
         FfiConverterBool.write(value.isMeeting, into: &buf)
         FfiConverterBool.write(value.canCall, into: &buf)
         FfiConverterBool.write(value.muted, into: &buf)
+        FfiConverterOptionTypeChatRow.write(value.chat, into: &buf)
         FfiConverterOptionString.write(value.firstUnread, into: &buf)
         FfiConverterOptionTypePresenceView.write(value.presence, into: &buf)
         FfiConverterTypeAvatarShape.write(value.avatarShape, into: &buf)
@@ -16487,6 +16497,30 @@ fileprivate struct FfiConverterOptionTypeChatAdminView: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeChatAdminView.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeChatRow: FfiConverterRustBuffer {
+    typealias SwiftType = ChatRow?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeChatRow.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeChatRow.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }

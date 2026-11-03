@@ -483,6 +483,8 @@ pub struct ConversationView {
     pub can_call: bool,
     /// Notifications of this chat or channel are off.
     pub muted: bool,
+    /// The open chat as the chat list shows it, for the same actions; `None` for channels.
+    pub chat: Option<ChatRow>,
     /// First message from someone else that was unread when the chat was opened.
     pub first_unread: Option<String>,
     /// Direct chats: the other person's presence, once known.
@@ -1749,6 +1751,14 @@ impl App {
                     Selection::Chat(id) => self.chat_muted(id),
                     Selection::Channel { channel, .. } => self.channel_muted(channel),
                 },
+                chat: match &selection {
+                    Selection::Chat(id) => self
+                        .chats
+                        .iter()
+                        .find(|c| &c.id == id)
+                        .map(|c| self.chat_row(c)),
+                    Selection::Channel { .. } => None,
+                },
                 target: selection.into(),
                 title: self.title(),
                 subtitle,
@@ -2836,6 +2846,21 @@ mod sidebar_tests {
         app.chats[3].is_read = Some(false);
         assert_eq!(app.sidebar().chats[0].id, "newer");
         assert_eq!(app.sidebar().chats.len(), 1);
+    }
+
+    #[test]
+    fn the_open_chat_carries_its_list_row_even_when_filtered_out() {
+        let mut app = App::empty();
+        let mut favorite = chat("favorite", "2026-10-01T09:00:00Z");
+        favorite.is_sticky = Some(true);
+        *app.chats = vec![favorite, chat("other", "2026-10-01T09:00:00Z")];
+        *app.filter = Filter::Unread;
+        let mut pinned = |id: &str| {
+            *app.selected = Some(Selection::Chat(id.into()));
+            app.conversation_part().view.unwrap().chat.unwrap().pinned
+        };
+        assert!(pinned("favorite"));
+        assert!(!pinned("other"));
     }
 
     #[test]

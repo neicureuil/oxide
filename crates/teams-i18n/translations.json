@@ -3475,6 +3475,10 @@
     "fr": "Réunion dans Teams Web",
     "en": "Meet in Teams on the web"
   },
+  "ui.conversation_screen.more_actions": {
+    "fr": "Autres actions",
+    "en": "More actions"
+  },
   "ui.conversation_screen.new_post": {
     "fr": "Nouvelle publication",
     "en": "New post"

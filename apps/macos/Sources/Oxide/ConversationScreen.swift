@@ -15,6 +15,7 @@ struct ConversationScreen: View, Equatable {
     let chrome: ConversationChrome
     let view: ConversationView
     @Namespace private var tabSpace
+    @State private var leaving: ChatRow?
 
     static func == (a: ConversationScreen, b: ConversationScreen) -> Bool {
         a.chrome == b.chrome && a.view == b.view
@@ -95,6 +96,15 @@ struct ConversationScreen: View, Equatable {
                 }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().pointerCursor()
                 .help("Notifications")
+                if let chat = view.chat {
+                    Menu {
+                        ChatActions(row: chat, onLeave: { leaving = $0 })
+                    } label: {
+                        Image(systemName: "ellipsis").frame(width: 28, height: 28)
+                    }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().pointerCursor()
+                    .help(L("ui.conversation_screen.more_actions"))
+                }
             }
             .frame(height: 60)
             HStack(spacing: 20) {
@@ -106,6 +116,15 @@ struct ConversationScreen: View, Equatable {
         }
         .padding(.horizontal, 20)
         .background(Theme.surface)
+        .confirmationDialog(L("ui.chat_admin.leave_question", ["title": leaving?.title ?? ""]),
+                            isPresented: Binding(get: { leaving != nil }, set: { if !$0 { leaving = nil } })) {
+            Button(L("ui.chat_admin.leave"), role: .destructive) {
+                if let row = leaving { store.send(.chatAdmin(action: .leave(chatId: row.id))) }
+                leaving = nil
+            }
+        } message: {
+            Text(L("ui.chat_admin.leave_explanation"))
+        }
     }
 
     private func tab(_ name: String, _ value: ConversationTab) -> some View {
