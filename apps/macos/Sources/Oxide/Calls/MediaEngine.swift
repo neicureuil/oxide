@@ -53,6 +53,8 @@ protocol MediaEngine: AnyObject {
     var speakingSources: Set<UInt32> { get }
     /// Our microphone picks up a voice.
     var localSpeaking: Bool { get }
+    /// The media connection dropped during the call and is being restored.
+    var reconnecting: Bool { get }
     /// What the engine saw during the current or last call.
     var diagnostics: CallDiagnostics { get }
     func prepare(callId: String, iceServers: [IceServerView], video: Bool, muted: Bool, speaker: Bool,
@@ -87,6 +89,7 @@ final class DemoMediaEngine: MediaEngine {
     let remoteVideos: [String: LKRTCVideoTrack] = [:]
     let speakingSources: Set<UInt32> = []
     let localSpeaking = false
+    let reconnecting = false
     private(set) var diagnostics = CallDiagnostics()
 
     func prepare(callId: String, iceServers: [IceServerView], video: Bool, muted: Bool, speaker: Bool,
