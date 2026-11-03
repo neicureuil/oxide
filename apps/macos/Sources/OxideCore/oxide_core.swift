@@ -3192,10 +3192,17 @@ public struct ComposerFormat: Equatable, Hashable {
     public var block: ComposerBlock
     public var indent: UInt32
     public var alignment: String
+    /**
+     * A pasted image, by its draft attachment id: the format covers the one U+FFFC character standing for it.
+     */
+    public var image: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(start: UInt32, length: UInt32, bold: Bool, italic: Bool, underline: Bool, strike: Bool, code: Bool, color: String?, highlight: String?, size: UInt32, link: String?, block: ComposerBlock, indent: UInt32, alignment: String) {
+    public init(start: UInt32, length: UInt32, bold: Bool, italic: Bool, underline: Bool, strike: Bool, code: Bool, color: String?, highlight: String?, size: UInt32, link: String?, block: ComposerBlock, indent: UInt32, alignment: String, 
+        /**
+         * A pasted image, by its draft attachment id: the format covers the one U+FFFC character standing for it.
+         */image: String?) {
         self.start = start
         self.length = length
         self.bold = bold
@@ -3210,6 +3217,7 @@ public struct ComposerFormat: Equatable, Hashable {
         self.block = block
         self.indent = indent
         self.alignment = alignment
+        self.image = image
     }
 
     
@@ -3241,7 +3249,8 @@ public struct FfiConverterTypeComposerFormat: FfiConverterRustBuffer {
                 link: FfiConverterOptionString.read(from: &buf), 
                 block: FfiConverterTypeComposerBlock.read(from: &buf), 
                 indent: FfiConverterUInt32.read(from: &buf), 
-                alignment: FfiConverterString.read(from: &buf)
+                alignment: FfiConverterString.read(from: &buf), 
+                image: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -3260,6 +3269,7 @@ public struct FfiConverterTypeComposerFormat: FfiConverterRustBuffer {
         FfiConverterTypeComposerBlock.write(value.block, into: &buf)
         FfiConverterUInt32.write(value.indent, into: &buf)
         FfiConverterString.write(value.alignment, into: &buf)
+        FfiConverterOptionString.write(value.image, into: &buf)
     }
 }
 
@@ -6382,19 +6392,27 @@ public struct PendingFileView: Equatable, Hashable {
     public var progress: UInt8
     public var ready: Bool
     public var error: String?
+    /**
+     * A pasted image: the draft shows it in the text, not as an attachment.
+     */
+    public var inline: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
     public init(id: String, name: String, ext: String, 
         /**
          * 0–100.
-         */progress: UInt8, ready: Bool, error: String?) {
+         */progress: UInt8, ready: Bool, error: String?, 
+        /**
+         * A pasted image: the draft shows it in the text, not as an attachment.
+         */inline: Bool) {
         self.id = id
         self.name = name
         self.ext = ext
         self.progress = progress
         self.ready = ready
         self.error = error
+        self.inline = inline
     }
 
     
@@ -6418,7 +6436,8 @@ public struct FfiConverterTypePendingFileView: FfiConverterRustBuffer {
                 ext: FfiConverterString.read(from: &buf), 
                 progress: FfiConverterUInt8.read(from: &buf), 
                 ready: FfiConverterBool.read(from: &buf), 
-                error: FfiConverterOptionString.read(from: &buf)
+                error: FfiConverterOptionString.read(from: &buf), 
+                inline: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -6429,6 +6448,7 @@ public struct FfiConverterTypePendingFileView: FfiConverterRustBuffer {
         FfiConverterUInt8.write(value.progress, into: &buf)
         FfiConverterBool.write(value.ready, into: &buf)
         FfiConverterOptionString.write(value.error, into: &buf)
+        FfiConverterBool.write(value.inline, into: &buf)
     }
 }
 
@@ -12203,6 +12223,13 @@ public enum FileAction: Equatable, Hashable {
      */
     case attach(paths: [String]
     )
+    /**
+     * An image pasted in the composer, as PNG: it goes inline in the message, as in Teams, not to OneDrive.
+     * `id` is the one its placeholder in the draft carries (`ComposerFormat::image`); `width` and `height` are
+     * its size on screen, in points.
+     */
+    case pasteImage(id: String, png: Data, width: UInt32, height: UInt32
+    )
     case removeAttachment(id: String
     )
     case sharedFilter(filter: SharedFilter
@@ -12283,44 +12310,47 @@ public struct FfiConverterTypeFileAction: FfiConverterRustBuffer {
         case 6: return .attach(paths: try FfiConverterSequenceString.read(from: &buf)
         )
         
-        case 7: return .removeAttachment(id: try FfiConverterString.read(from: &buf)
+        case 7: return .pasteImage(id: try FfiConverterString.read(from: &buf), png: try FfiConverterData.read(from: &buf), width: try FfiConverterUInt32.read(from: &buf), height: try FfiConverterUInt32.read(from: &buf)
         )
         
-        case 8: return .sharedFilter(filter: try FfiConverterTypeSharedFilter.read(from: &buf)
+        case 8: return .removeAttachment(id: try FfiConverterString.read(from: &buf)
         )
         
-        case 9: return .sharedSearch(query: try FfiConverterString.read(from: &buf)
+        case 9: return .sharedFilter(filter: try FfiConverterTypeSharedFilter.read(from: &buf)
         )
         
-        case 10: return .refreshShared
-        
-        case 11: return .browse(place: try FfiConverterTypeBrowserPlace.read(from: &buf)
+        case 10: return .sharedSearch(query: try FfiConverterString.read(from: &buf)
         )
         
-        case 12: return .openFolder(key: try FfiConverterString.read(from: &buf)
+        case 11: return .refreshShared
+        
+        case 12: return .browse(place: try FfiConverterTypeBrowserPlace.read(from: &buf)
         )
         
-        case 13: return .crumb(index: try FfiConverterUInt32.read(from: &buf)
+        case 13: return .openFolder(key: try FfiConverterString.read(from: &buf)
         )
         
-        case 14: return .newFolder(name: try FfiConverterString.read(from: &buf)
+        case 14: return .crumb(index: try FfiConverterUInt32.read(from: &buf)
         )
         
-        case 15: return .rename(key: try FfiConverterString.read(from: &buf), name: try FfiConverterString.read(from: &buf)
+        case 15: return .newFolder(name: try FfiConverterString.read(from: &buf)
         )
         
-        case 16: return .delete(key: try FfiConverterString.read(from: &buf)
+        case 16: return .rename(key: try FfiConverterString.read(from: &buf), name: try FfiConverterString.read(from: &buf)
         )
         
-        case 17: return .setColor(key: try FfiConverterString.read(from: &buf), color: try FfiConverterUInt8.read(from: &buf)
+        case 17: return .delete(key: try FfiConverterString.read(from: &buf)
         )
         
-        case 18: return .uploadHere(paths: try FfiConverterSequenceString.read(from: &buf)
+        case 18: return .setColor(key: try FfiConverterString.read(from: &buf), color: try FfiConverterUInt8.read(from: &buf)
         )
         
-        case 19: return .refreshBrowser
+        case 19: return .uploadHere(paths: try FfiConverterSequenceString.read(from: &buf)
+        )
         
-        case 20: return .searchFiles(query: try FfiConverterString.read(from: &buf)
+        case 20: return .refreshBrowser
+        
+        case 21: return .searchFiles(query: try FfiConverterString.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -12362,73 +12392,81 @@ public struct FfiConverterTypeFileAction: FfiConverterRustBuffer {
             FfiConverterSequenceString.write(paths, into: &buf)
             
         
-        case let .removeAttachment(id):
+        case let .pasteImage(id,png,width,height):
             writeInt(&buf, Int32(7))
+            FfiConverterString.write(id, into: &buf)
+            FfiConverterData.write(png, into: &buf)
+            FfiConverterUInt32.write(width, into: &buf)
+            FfiConverterUInt32.write(height, into: &buf)
+            
+        
+        case let .removeAttachment(id):
+            writeInt(&buf, Int32(8))
             FfiConverterString.write(id, into: &buf)
             
         
         case let .sharedFilter(filter):
-            writeInt(&buf, Int32(8))
+            writeInt(&buf, Int32(9))
             FfiConverterTypeSharedFilter.write(filter, into: &buf)
             
         
         case let .sharedSearch(query):
-            writeInt(&buf, Int32(9))
+            writeInt(&buf, Int32(10))
             FfiConverterString.write(query, into: &buf)
             
         
         case .refreshShared:
-            writeInt(&buf, Int32(10))
+            writeInt(&buf, Int32(11))
         
         
         case let .browse(place):
-            writeInt(&buf, Int32(11))
+            writeInt(&buf, Int32(12))
             FfiConverterTypeBrowserPlace.write(place, into: &buf)
             
         
         case let .openFolder(key):
-            writeInt(&buf, Int32(12))
+            writeInt(&buf, Int32(13))
             FfiConverterString.write(key, into: &buf)
             
         
         case let .crumb(index):
-            writeInt(&buf, Int32(13))
+            writeInt(&buf, Int32(14))
             FfiConverterUInt32.write(index, into: &buf)
             
         
         case let .newFolder(name):
-            writeInt(&buf, Int32(14))
+            writeInt(&buf, Int32(15))
             FfiConverterString.write(name, into: &buf)
             
         
         case let .rename(key,name):
-            writeInt(&buf, Int32(15))
+            writeInt(&buf, Int32(16))
             FfiConverterString.write(key, into: &buf)
             FfiConverterString.write(name, into: &buf)
             
         
         case let .delete(key):
-            writeInt(&buf, Int32(16))
+            writeInt(&buf, Int32(17))
             FfiConverterString.write(key, into: &buf)
             
         
         case let .setColor(key,color):
-            writeInt(&buf, Int32(17))
+            writeInt(&buf, Int32(18))
             FfiConverterString.write(key, into: &buf)
             FfiConverterUInt8.write(color, into: &buf)
             
         
         case let .uploadHere(paths):
-            writeInt(&buf, Int32(18))
+            writeInt(&buf, Int32(19))
             FfiConverterSequenceString.write(paths, into: &buf)
             
         
         case .refreshBrowser:
-            writeInt(&buf, Int32(19))
+            writeInt(&buf, Int32(20))
         
         
         case let .searchFiles(query):
-            writeInt(&buf, Int32(20))
+            writeInt(&buf, Int32(21))
             FfiConverterString.write(query, into: &buf)
             
         }

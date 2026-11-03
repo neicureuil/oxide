@@ -31,7 +31,11 @@ pub struct ComposerFormat {
     pub block: ComposerBlock,
     pub indent: u32,
     pub alignment: String,
+    /// A pasted image, by its draft attachment id: the format covers the one U+FFFC character standing for it.
+    pub image: Option<String>,
 }
+/// The character a pasted image takes in the draft, as in AppKit text.
+pub(crate) const IMAGE_PLACEHOLDER: char = '\u{FFFC}';
 fn is_hex_color(value: &str) -> bool {
     value.len() == 7 && value.starts_with('#') && value[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -157,6 +161,9 @@ impl App {
                     return None;
                 }
                 end = last;
+                let placeholder = byte_offset(self.conv.draft(), f.start)
+                    .is_some_and(|b| self.conv.draft()[b..].starts_with(IMAGE_PLACEHOLDER));
+                f.image = f.image.filter(|_| f.length == 1 && placeholder);
                 f.color = f.color.filter(|c| is_hex_color(c));
                 f.highlight = f.highlight.filter(|c| is_hex_color(c));
                 f.link = f.link.and_then(|url| crate::html::safe_link(&url));
@@ -180,7 +187,11 @@ impl App {
         let inherited = formats
             .iter()
             .find(|f| f.start <= start && f.start + f.length >= start)
-            .cloned();
+            .cloned()
+            .map(|mut style| {
+                style.image = None;
+                style
+            });
         let mut shifted = Vec::new();
         for f in formats.drain(..) {
             let last = f.start + f.length;
@@ -207,6 +218,16 @@ impl App {
         shifted.sort_by_key(|f| f.start);
         *formats = shifted;
     }
+    /// Ids of the pasted images still in the draft.
+    pub(crate) fn draft_image_ids(&self) -> Vec<String> {
+        self.composer
+            .formats
+            .get(&self.draft_key())
+            .into_iter()
+            .flatten()
+            .filter_map(|f| f.image.clone())
+            .collect()
+    }
     pub(super) fn style_at(&self, byte: usize) -> Option<&ComposerFormat> {
         let position = self.conv.draft()[..byte].encode_utf16().count() as u32;
         self.composer
@@ -232,7 +253,16 @@ impl App {
                 .min()
                 .unwrap_or(end)
                 .min(end);
-            output.push_str(&styled(escape(&self.conv.draft()[cursor..next]), style));
+            match style.and_then(|s| s.image.as_deref()) {
+                Some(id) => {
+                    if let Some(image) = self.inline_image(id) {
+                        output.push_str(&image.tag());
+                    }
+                }
+                None => {
+                    output.push_str(&styled(escape(&self.conv.draft()[cursor..next]), style))
+                }
+            }
             cursor = next;
         }
         output
@@ -391,5 +421,22 @@ mod tests {
         assert!(app.draft_formats().is_empty());
         let _ = app.handle(ConversationMsg::CloseReply);
         assert_eq!(app.composer_html(), html);
+    }
+    #[test]
+    fn text_typed_next_to_an_image_is_not_an_image() {
+        let mut app = app();
+        let image = ComposerFormat {
+            start: 1,
+            length: 1,
+            bold: true,
+            image: Some("img".into()),
+            ..Default::default()
+        };
+        app.rich_draft_changed("a\u{FFFC}".into(), vec![image.clone()]);
+        app.replace_draft(2, 0, "b".into(), None, None);
+        assert_eq!(app.conv.draft(), "a\u{FFFC}b");
+        let images: Vec<_> = app.draft_formats().into_iter().filter(|f| f.image.is_some()).collect();
+        assert_eq!(images, [image]);
+        assert_eq!(app.draft_image_ids(), ["img"]);
     }
 }

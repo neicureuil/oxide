@@ -1884,6 +1884,7 @@ impl App {
                 if self.read_only() {
                     return Task::none();
                 }
+                self.drop_unplaced_images();
                 if self.conv.sending()
                     || (self.conv.draft().trim().is_empty()
                         && !self.has_attachments()
@@ -1902,7 +1903,15 @@ impl App {
                 else {
                     return Task::none();
                 };
-                let (ids, uploaded): (Vec<_>, Vec<_>) = attachments.into_iter().unzip();
+                let mut ids = vec![];
+                let mut uploaded = vec![];
+                for (id, upload) in attachments {
+                    ids.push(id);
+                    // Pasted images are in the HTML, where their placeholder is.
+                    if let files::Uploaded::File(file) = upload {
+                        uploaded.push(file);
+                    }
+                }
                 let share = self.share_task(&selection, uploaded);
                 self.conv.begin_send();
                 *self.error = None;
