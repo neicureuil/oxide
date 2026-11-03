@@ -209,3 +209,36 @@ async fn preview_images_carry_the_ams_cookie_as_the_web_client_s_img_does() {
     let legacy = "https://urlp.asm.skype.com/v1/url/content?url=https%3A%2F%2Fx.com%2Fa.jpg";
     assert_eq!(client.download_image(legacy).await.unwrap(), b"thumbnail");
 }
+#[tokio::test]
+async fn a_pasted_image_is_created_for_the_conversation_then_sent() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/media/v1/objects/"))
+        .and(header("authorization", "Bearer private"))
+        .and(header("x-ms-client-version", teams_auth::CLIENT_VERSION))
+        .and(wiremock::matchers::body_partial_json(serde_json::json!({
+            "type": "pish/image",
+            "permissions": {"19:chat@thread.v2": ["read"]},
+            "filename": "image.png",
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": "0-weu-d1-abc"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/media/v1/objects/0-weu-d1-abc/content/imgpsh"))
+        .and(header("authorization", "Bearer private"))
+        .and(wiremock::matchers::body_bytes(b"png bytes".to_vec()))
+        .respond_with(ResponseTemplate::new(201))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let url = client(&server)
+        .upload_image("19:chat@thread.v2", "image.png", b"png bytes".to_vec())
+        .await
+        .unwrap();
+    assert_eq!(
+        url,
+        format!("{}/media/v1/objects/0-weu-d1-abc/views/imgo", server.uri())
+    );
+}

@@ -387,6 +387,10 @@
     "fr": "Redirection d’image non HTTPS refusée.",
     "en": "Non-HTTPS image redirect refused."
   },
+  "chat.media.the_image_service_returned_no_object": {
+    "fr": "Le service d’images de Teams n’a pas renvoyé d’identifiant pour l’image.",
+    "en": "The Teams image service returned no identifier for the image."
+  },
   "chat.media.the_session_s_media_service_is": {
     "fr": "Service média de la session indisponible.",
     "en": "The session's media service is unavailable."

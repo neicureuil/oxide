@@ -135,6 +135,78 @@ impl<A: Authenticator> ChatClient<A> {
         *cookies = Some(found.clone());
         Ok(found)
     }
+    /// Puts an image on AMS, readable by the members of `conversation`, as the web client does for a pasted image:
+    /// `POST v1/objects/` creates the object, `PUT v1/objects/{id}/content/imgpsh` sends the bytes.
+    /// Returns the address the message's `<img>` points to.
+    pub async fn upload_image(
+        &self,
+        conversation: &str,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<String, Error> {
+        let base = self.auth.base_url(Service::Ams)?;
+        let base = base.as_str().trim_end_matches('/');
+        let body = serde_json::json!({
+            "type": "pish/image",
+            "permissions": { conversation: ["read"] },
+            "filename": name,
+            "sharingMode": "Inline",
+        });
+        let mut headers = HeaderMap::new();
+        self.auth.authorize(Service::Ams, &mut headers).await?;
+        // AMS answers 400 to object creation without it.
+        headers.insert(
+            "x-ms-client-version",
+            http::HeaderValue::from_static(teams_auth::CLIENT_VERSION),
+        );
+        let response = self
+            .http
+            .post(Url::parse(&format!("{base}/v1/objects/"))?)
+            .headers(headers)
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(Error::Http)?;
+        let status = response.status();
+        let text = response.text().await.map_err(Error::Http)?;
+        if !status.is_success() {
+            return Err(Error::Status {
+                endpoint: "AMS objects",
+                status,
+                body: text,
+            });
+        }
+        let created: serde_json::Value =
+            serde_json::from_str(&text).map_err(|source| Error::Decode {
+                endpoint: "AMS objects",
+                source,
+            })?;
+        let id = created["id"]
+            .as_str()
+            .filter(|id| !id.is_empty() && !id.contains(['/', '?', '#']))
+            .ok_or(Error::Media(t("chat.media.the_image_service_returned_no_object")))?;
+        let mut headers = HeaderMap::new();
+        self.auth.authorize(Service::Ams, &mut headers).await?;
+        let response = self
+            .http
+            .put(Url::parse(&format!("{base}/v1/objects/{id}/content/imgpsh"))?)
+            .headers(headers)
+            .header(http::header::CONTENT_TYPE, "application/octet-stream")
+            .body(bytes)
+            .timeout(std::time::Duration::from_secs(120))
+            .send()
+            .await
+            .map_err(Error::Http)?;
+        if !response.status().is_success() {
+            return Err(Error::Status {
+                endpoint: "AMS content",
+                status: response.status(),
+                body: response.text().await.unwrap_or_default(),
+            });
+        }
+        Ok(format!("{base}/v1/objects/{id}/views/imgo"))
+    }
     pub async fn download_image(&self, source: &str) -> Result<Vec<u8>, Error> {
         let source = Url::parse(source)
             .map_err(|_| Error::Media(t("chat.media.invalid_image_address")))?;
