@@ -1,12 +1,13 @@
 import AVFoundation
 import SwiftUI
 
-/// Settings › Audio et vidéo: default call devices, with a test for each.
+/// Settings › Audio et vidéo: default call devices, with a test for each, and the local recordings folder.
 /// One card per device, laid out like System Settings: title on the left, control on the right.
 struct DeviceSettingsSection: View {
     @AppStorage(MediaDevicePreferences.microphoneKey) private var microphone = ""
     @AppStorage(MediaDevicePreferences.speakerKey) private var speaker = ""
     @AppStorage(MediaDevicePreferences.cameraKey) private var camera = ""
+    @AppStorage(LocalRecorder.folderKey) private var recordingsFolder = ""
     @State private var devices = MediaDevices()
     @State private var mic = MicrophoneTester()
     @State private var sound = SpeakerTester()
@@ -23,6 +24,7 @@ struct DeviceSettingsSection: View {
                 previewing = false
             })
             .card()
+            recordingsCard
             Muted(L("ui.device_settings_section.default_devices_detail"), size: 12)
                 .padding(.horizontal, 4)
         }
@@ -88,6 +90,33 @@ struct DeviceSettingsSection: View {
             }
         }
         .card()
+    }
+
+    // MARK: Local recordings
+
+    private var recordingsCard: some View {
+        DeviceRow(L("ui.device_settings_section.local_recordings"), symbol: "record.circle",
+                  detail: (recordingsFolder.isEmpty ? LocalRecorder.defaultFolder.path : recordingsFolder)
+                      .replacingOccurrences(of: NSHomeDirectory(), with: "~"),
+                  detailIsError: false) {
+            if !recordingsFolder.isEmpty {
+                Button(L("ui.device_settings_section.reset_folder")) { recordingsFolder = "" }
+                    .buttonStyle(OutlineButtonStyle())
+            }
+            Button(L("ui.device_settings_section.change_folder")) { chooseRecordingsFolder() }
+                .buttonStyle(OutlineButtonStyle())
+        }
+        .card()
+    }
+
+    private func chooseRecordingsFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = L("ui.device_settings_section.choose_folder")
+        panel.directoryURL = LocalRecorder.folder
+        if panel.runModal() == .OK, let url = panel.url { recordingsFolder = url.path }
     }
 
     // MARK: Camera

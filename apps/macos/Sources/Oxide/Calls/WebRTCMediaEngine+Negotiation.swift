@@ -344,7 +344,10 @@ extension WebRTCMediaEngine: LKRTCPeerConnectionDelegate {
         let mid = peerConnection.transceivers.first { $0.receiver.receiverId == rtpReceiver.receiverId }?.mid
         Task { @MainActor in
             guard self.connection === peerConnection else { return }
-            if let audio = track as? LKRTCAudioTrack { audio.isEnabled = self.speakerOn }
+            if let audio = track as? LKRTCAudioTrack {
+                audio.isEnabled = self.speakerOn
+                self.recordRemote(audio)
+            }
             if let video = track as? LKRTCVideoTrack {
                 if self.remoteVideo == nil { self.remoteVideo = video }
                 if let mid { self.remoteVideos[mid] = video }

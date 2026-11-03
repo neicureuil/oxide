@@ -959,3 +959,87 @@ fn an_added_device_can_turn_its_speaker_back_on() {
     );
     assert!(app.call_part().active.unwrap().speaker);
 }
+
+#[test]
+fn cloud_recording_shows_who_records_and_hides_the_recorder_bot() {
+    let mut app = ready();
+    let _ = app.update_call(CallMsg::Action(CallAction::PrepareMeeting {
+        url: "https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0?context=%7b%22Tid%22%3a%22t%22%7d".into(),
+        title: "Point".into(),
+    }));
+    let _ = app.update_call(CallMsg::Action(CallAction::ConfirmJoin {
+        video: false,
+        muted: false,
+        speaker: true,
+        transfer: false,
+    }));
+    let id = app.call_part().active.unwrap().id;
+    let _ = app.update_call(CallMsg::Action(CallAction::LocalDescription {
+        call_id: id.clone(),
+        sdp: "v=0".into(),
+    }));
+    let _ = app.update_call(CallMsg::Http(
+        app.generation,
+        id.clone(),
+        Op::Join,
+        Ok(json!({"links": {"leave": "https://conv.example/l",
+            "addParticipantAndModality": "https://conv.example/addm"}})),
+    ));
+    let pushed = |name: &str, body: serde_json::Value| teams_realtime::PushedRequest {
+        method: "POST".into(),
+        url: String::new(),
+        path: format!("/callAgent/sess/{id}/{name}"),
+        headers: Default::default(),
+        body: body.to_string(),
+    };
+    let _ = app.call_pushed(&pushed(
+        "conversation/rosterUpdate/",
+        json!({"participants": {
+            "8:orgid:me": {"displayName": "Moi", "role": "Presenter"},
+            "8:orgid:o": {"displayName": "Olga", "role": "Organizer"}}}),
+    ));
+    let _ = app.call_pushed(&pushed("call/acceptance/", json!({})));
+    let call = app.call_part().active.unwrap();
+    assert!(call.can_record);
+    assert_eq!(call.recording, RecordingView::None);
+
+    let _ = app.update_call(CallMsg::Action(CallAction::StartRecording));
+    assert_eq!(app.call_part().active.unwrap().recording, RecordingView::Starting);
+    let _ = app.update_call(CallMsg::RecorderToken(app.generation, id.clone(), Ok("aad".into())));
+    assert_eq!(
+        app.call_part().active.unwrap().recording,
+        RecordingView::Starting,
+        "the bot is being invited"
+    );
+
+    let _ = app.call_pushed(&pushed(
+        "conversation/rosterUpdate/",
+        json!({"participants": {payload::recording::BOT_MRIS[0]: {
+            "displayName": "Recorder",
+            "endpoints": {"bot": {"call": {}, "endpointMetadata": {
+                "commandUrl": "https://bot.example/command",
+                "processingModes": {"recording": {"state": "Active", "userId": "8:orgid:o"}}}}}}}}),
+    ));
+    let call = app.call_part().active.unwrap();
+    assert_eq!(call.recording, RecordingView::Active { by: Some("Olga".into()) });
+    assert_eq!(call.participants.len(), 1, "the recorder bot is not a participant");
+
+    let _ = app.update_call(CallMsg::Action(CallAction::StopRecording));
+    assert_eq!(app.call_part().active.unwrap().recording, RecordingView::Stopping);
+}
+
+#[test]
+fn recording_needs_a_connected_call() {
+    let mut app = ready();
+    let _ = app.update_call(CallMsg::Action(CallAction::Start {
+        mri: "8:orgid:bob".into(),
+        video: false,
+    }));
+    let id = app.call_part().active.unwrap().id;
+    // No session yet: nothing to record.
+    let _ = app.update_call(CallMsg::Action(CallAction::StartRecording));
+    assert_eq!(app.call_part().active.unwrap().recording, RecordingView::None);
+    assert!(!app.call_part().active.unwrap().can_record);
+    let _ = app.update_call(CallMsg::RecorderToken(app.generation, id, Err("x".into())));
+    assert_eq!(app.call_part().active.unwrap().recording, RecordingView::None, "nothing shown before the call connects");
+}

@@ -58,7 +58,7 @@ pub async fn drive<A: Authenticator + 'static>(
                     let feedback = feedback.clone();
                     let call = session.id.clone();
                     tokio::spawn(async move {
-                        let result = client.send(&call, method, &url, &body).await;
+                        let result = client.send_op(&call, op, method, &url, &body).await;
                         let _ = feedback.send(Input::Response(op, result));
                     });
                 }

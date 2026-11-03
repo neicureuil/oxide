@@ -63,6 +63,8 @@ pub enum Service {
     SubstrateSearch,
     /// Per-channel notification settings (NSS, `regionGtms.userIntelligenceService`).
     Uis,
+    /// The meeting recorder bot's `commandUrl` (from the roster): AAD bearer for `callRecording.resource`.
+    CallRecorder,
 }
 
 impl Service {
@@ -98,6 +100,7 @@ impl Service {
             Service::Substrate => "substrate",
             Service::SubstrateSearch => "substrateSearch",
             Service::Uis => "userIntelligenceService",
+            Service::CallRecorder => "callRecorder",
         }
     }
 }

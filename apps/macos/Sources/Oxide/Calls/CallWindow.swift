@@ -353,6 +353,7 @@ private struct InCallView: View {
     @State private var showRoster = true
     @State private var pickingScreen = false
     @State private var layout = CallLayoutState()
+    @State private var localRecordingError: String?
     private func send(_ action: CallAction) { store.send(.call(action: action)) }
 
     var body: some View {
@@ -373,6 +374,7 @@ private struct InCallView: View {
             if store.media.reconnecting && call.phase == .connected {
                 Banner(symbol: "wifi.exclamationmark", text: L("ui.call_window.reconnecting"), tint: Theme.errorBackground)
             }
+            recordingBanners
             if let error = store.call?.error {
                 Banner(symbol: "exclamationmark.triangle", text: error, tint: Theme.errorBackground)
             }
@@ -466,6 +468,100 @@ private struct InCallView: View {
         return call.title
     }
 
+    // MARK: Recording
+
+    private var cloudRecording: Bool {
+        switch call.recording {
+        case .starting, .active, .stopping: true
+        case .none, .failed: false
+        }
+    }
+
+    @ViewBuilder private var recordingBanners: some View {
+        switch call.recording {
+        case .active(let by):
+            Banner(symbol: "record.circle.fill",
+                   text: by.map { L("ui.call_window.recording_started_by", ["name": $0]) } ?? L("ui.call_window.recording_in_teams"),
+                   tint: Theme.errorBackground)
+        case .starting:
+            Banner(symbol: "record.circle", text: L("ui.call_window.starting_the_recording"), tint: Theme.accentSoft)
+        case .stopping:
+            Banner(symbol: "record.circle", text: L("ui.call_window.stopping_the_recording"), tint: Theme.accentSoft)
+        case .failed(let reason):
+            Banner(symbol: "exclamationmark.triangle", text: reason, tint: Theme.errorBackground)
+        case .none:
+            EmptyView()
+        }
+        if let started = store.media.localRecordingStarted {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Banner(symbol: "waveform.circle.fill",
+                       text: L("ui.call_window.recording_on_this_mac") + " · "
+                           + CallClock.elapsed(since: Int64(started.timeIntervalSince1970 * 1000), now: context.date),
+                       tint: Theme.errorBackground)
+            }
+        }
+        if let error = localRecordingError {
+            Banner(symbol: "exclamationmark.triangle", text: error, tint: Theme.errorBackground)
+        }
+        if let saved = store.media.lastLocalRecording {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle")
+                Text(L("ui.call_window.recording_saved", ["name": saved.lastPathComponent])).lineLimit(1).truncationMode(.middle)
+                Spacer()
+                Button(L("ui.call_window.show_in_finder")) { NSWorkspace.shared.activateFileViewerSelecting([saved]) }
+                    .buttonStyle(.link)
+                Button { store.media.lastLocalRecording = nil } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain).pointerCursor()
+                    .accessibilityLabel(L("ui.call_window.dismiss"))
+            }
+            .font(.figtree(12))
+            .padding(.horizontal, 16).padding(.vertical, 8)
+            .background(Theme.accentSoft)
+        }
+    }
+
+    private func startLocalRecording() {
+        localRecordingError = nil
+        store.media.lastLocalRecording = nil
+        do {
+            try store.media.startLocalRecording(callId: call.id, url: LocalRecorder.defaultURL(title: call.title))
+        } catch {
+            localRecordingError = L("ui.call_window.could_not_record_on_this_mac", ["error": error.localizedDescription])
+        }
+    }
+
+    private var recordMenu: some View {
+        let local = store.media.localRecordingStarted != nil
+        let on = local || cloudRecording
+        return Menu {
+            if cloudRecording {
+                Button(L("ui.call_window.stop_recording_in_teams")) { send(.stopRecording) }
+                    .disabled(!call.canRecord || call.recording == .stopping)
+            } else {
+                Button(L("ui.call_window.record_in_teams")) { send(.startRecording) }
+                    .disabled(!call.canRecord)
+            }
+            if local {
+                Button(L("ui.call_window.stop_recording_on_this_mac")) { _ = store.media.stopLocalRecording() }
+            } else {
+                Button(L("ui.call_window.record_on_this_mac_audio")) { startLocalRecording() }
+            }
+        } label: {
+            Image(systemName: on ? "record.circle.fill" : "record.circle")
+                .font(.system(size: 16))
+                .frame(width: 44, height: 38)
+                .foregroundStyle(on ? .white : Theme.text)
+                .background(on ? Theme.danger : Theme.input, in: RoundedRectangle(cornerRadius: 10))
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .pointerCursor()
+        .help(L("ui.call_window.record"))
+        .accessibilityLabel(L("ui.call_window.record"))
+    }
+
     private var controls: some View {
         HStack(spacing: 12) {
             Spacer()
@@ -487,6 +583,9 @@ private struct InCallView: View {
             }
             .keyboardShortcut("e", modifiers: [.command, .shift])
             .disabled(call.phase != .connected)
+            if call.phase == .connected {
+                recordMenu
+            }
             ToggleButton(on: call.speaker, symbol: call.speaker ? "speaker.wave.2.fill" : "speaker.slash.fill",
                          label: call.speaker ? L("ui.call_window.mute_speaker") : L("ui.call_window.unmute_speaker")) {
                 send(.setSpeaker(on: !call.speaker))

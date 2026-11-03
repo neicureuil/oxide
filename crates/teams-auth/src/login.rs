@@ -27,6 +27,8 @@ const OUTLOOK: &str = "https://outlook.office.com";
 const OUTLOOK_SEARCH: &str = "https://outlook.office.com/search";
 /// Audience of the notification settings service (`activity.uisResourceURL`).
 const UIS: &str = "https://uis.teams.microsoft.com";
+/// `callRecording.resource` of the web client's config: the recorder bot's audience.
+const CALL_RECORDER: &str = "4580fd1d-e5a3-4f56-9ad1-aab0e3bf8f76";
 /// Token and authz requests are short; fail them sooner than service calls.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -844,6 +846,10 @@ impl Authenticator for TeamsAuthenticator {
                     &self.session.read().unwrap().skype_token,
                 )?;
             }
+            Service::CallRecorder => {
+                let aad = self.access_token(CALL_RECORDER, false).await?;
+                insert_bearer(headers, &aad)?;
+            }
             Service::Substrate | Service::SubstrateSearch => {
                 let audience = if service == Service::SubstrateSearch {
                     OUTLOOK_SEARCH
@@ -902,6 +908,10 @@ impl Authenticator for TeamsAuthenticator {
                 .await
                 .map(drop),
             Service::Uis => self.access_token_locked(UIS, true).await.map(drop),
+            Service::CallRecorder => self
+                .access_token_locked(CALL_RECORDER, true)
+                .await
+                .map(drop),
             calling => self.refresh_mode_locked(self.calling_mode(calling)).await,
         }
         .is_ok()

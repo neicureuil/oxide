@@ -3,7 +3,9 @@ use super::*;
 use serde_json::Value;
 use teams_calling::client::ConversationClient;
 use teams_calling::payload::{self, Callbacks, Local, Media, Target};
-use teams_calling::session::{CallKind, CallSession, Command, EndReason, Input, Op, Phase, Timer};
+use teams_calling::session::{
+    CallKind, CallSession, Command, EndReason, Input, Op, Phase, RecorderState, Recording, Timer,
+};
 use teams_calling::trap::{self, TrapClient};
 use teams_calling::{MeetingLink, sdp};
 use teams_i18n::{t, tf};
@@ -30,6 +32,19 @@ pub(crate) fn echo_bot_mri() -> String {
 
 /// Cameras shown at once in a group call, one video line each (web `numVideoChannelsGvc`, `nonMultiStreamChannels` 9).
 const CAMERA_LINES: u32 = 8;
+
+/// `getRecordingFileName`: `<title>-<local yyyyMMdd_HHmmss>-Meeting Recording`.
+fn recording_file_name(title: &str) -> String {
+    let title: String = title
+        .chars()
+        .map(|c| if "\\/:*?\"<>|#%".contains(c) { '_' } else { c })
+        .collect();
+    format!(
+        "{}-{}-Meeting Recording",
+        title.trim(),
+        chrono::Local::now().format("%Y%m%d_%H%M%S")
+    )
+}
 
 /// Members rung by a group call from a chat; bigger groups should use a meeting.
 const MAX_GROUP_CALL: usize = 20;
@@ -84,6 +99,22 @@ pub struct ActiveCallView {
     pub can_accept: bool,
     /// Incoming call offered with video.
     pub offers_video: bool,
+    /// Cloud recording of the call, whoever started it.
+    pub recording: RecordingView,
+    /// We may ask the service to record (not an attendee, meeting allows it).
+    pub can_record: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum RecordingView {
+    None,
+    /// The recorder is being added or told to start.
+    Starting,
+    /// Recording; `by` names who started it, when known.
+    Active { by: Option<String> },
+    Stopping,
+    /// Our request to record failed.
+    Failed { reason: String },
 }
 
 /// A participant's camera or shared screen, received on one of our video lines.
@@ -210,6 +241,9 @@ pub enum CallAction {
         call_id: String,
         sdp: String,
     },
+    /// Cloud recording (OneDrive `Recordings`), as the web client's Record button.
+    StartRecording,
+    StopRecording,
     /// The Mac woke up or changed network: reconnect the push channel and restart ICE.
     NetworkChanged,
 }
@@ -221,6 +255,8 @@ pub(crate) enum CallMsg {
     EchoChat(u64, String, Result<String, String>),
     Http(u64, String, Op, Result<Value, u16>),
     Timer(u64, String, Timer),
+    /// AAD token for the recorder bot, asked by `StartRecording`.
+    RecorderToken(u64, String, Result<String, String>),
 }
 
 /// WebRTC mid of a line the service names: a clashing line of its offer was renamed.
@@ -252,6 +288,8 @@ impl ActiveCall {
             connected_at: None,
             remote_offer: None,
             remote_ngc_offer: None,
+            recorder_token_pending: false,
+            recording_error: None,
         }
     }
 
@@ -322,6 +360,10 @@ pub(crate) struct ActiveCall {
     remote_offer: Option<String>,
     /// The service's latest NGC offer: our answer mirrors its lines.
     remote_ngc_offer: Option<String>,
+    /// `StartRecording` waits for the recorder's token.
+    recorder_token_pending: bool,
+    /// Why our request to record failed before reaching the session.
+    recording_error: Option<String>,
 }
 
 #[derive(Default)]
@@ -358,7 +400,7 @@ fn session_task(
             let client = ConversationClient::new(client?.authenticator());
             let chain = id.clone();
             Some(Task::perform(
-                async move { client.send(&chain, method, &url, &body).await },
+                async move { client.send_op(&chain, op, method, &url, &body).await },
                 move |result| Msg::Call(CallMsg::Http(g, id, op, result)),
             ))
         }
@@ -423,6 +465,8 @@ impl App {
                             s.roster
                                 .values()
                                 .filter(|p| !p.id.eq_ignore_ascii_case(&self.me))
+                                // The recorder bot is not a person.
+                                .filter(|p| !payload::recording::is_bot(&p.id))
                                 .map(|p| CallParticipantView {
                                     id: p.id.clone(),
                                     name: p
@@ -471,6 +515,8 @@ impl App {
                             .as_ref()
                             .is_some_and(|s| s.phase == Phase::Notified),
                     offers_video: call.remote_offer.as_deref().is_some_and(offers_video),
+                    recording: self.recording_view(call),
+                    can_record: self.can_record(call),
                 }
             }),
             prejoin: self.call.prejoin.as_ref().map(|p| PrejoinView {
@@ -482,6 +528,162 @@ impl App {
             }),
             error: self.call.error.clone(),
         }
+    }
+
+    fn recording_view(&self, call: &ActiveCall) -> RecordingView {
+        let Some(session) = call.session.as_ref().filter(|_| call.ended.is_none()) else {
+            return RecordingView::None;
+        };
+        let recorder = session.recorder();
+        match &session.recording {
+            Recording::Inviting(_) | Recording::Starting => return RecordingView::Starting,
+            Recording::Stopping => return RecordingView::Stopping,
+            Recording::Failed if recorder.is_none_or(|r| r.state != RecorderState::Active) => {
+                return RecordingView::Failed {
+                    reason: t("core.call.recording_could_not_start").into(),
+                };
+            }
+            _ => {}
+        }
+        if call.recorder_token_pending {
+            return RecordingView::Starting;
+        }
+        if let Some(reason) = &call.recording_error {
+            return RecordingView::Failed {
+                reason: reason.clone(),
+            };
+        }
+        match recorder.map(|r| (r.state, r.user_id.clone())) {
+            Some((RecorderState::Active | RecorderState::Paused, by)) => RecordingView::Active {
+                by: by.map(|id| {
+                    if id.eq_ignore_ascii_case(&self.me) {
+                        t("core.call.you").into()
+                    } else {
+                        session
+                            .roster
+                            .get(&id)
+                            .and_then(|p| p.display_name.clone())
+                            .or_else(|| self.known_name(&id))
+                            .unwrap_or(id)
+                    }
+                }),
+            },
+            Some((RecorderState::WaitingForMeetingLive, _)) => RecordingView::Starting,
+            _ => RecordingView::None,
+        }
+    }
+
+    /// `getRecordingDisabledReason`, as far as the client knows: attendees and test calls cannot,
+    /// nor meetings whose `meetingCapability` forbids it; the service decides the rest.
+    fn can_record(&self, call: &ActiveCall) -> bool {
+        let Some(session) = call.session.as_ref() else {
+            return false;
+        };
+        let attendee = session
+            .roster
+            .get(self.me.as_str())
+            .and_then(|me| me.role.as_deref())
+            .is_some_and(|role| role.eq_ignore_ascii_case("attendee"));
+        let forbidden = session
+            .meeting_details
+            .as_ref()
+            .and_then(|d| d.pointer("/meetingCapability/allowCloudRecording"))
+            .and_then(Value::as_bool)
+            == Some(false);
+        call.ended.is_none()
+            && session.phase == Phase::Connected
+            && !matches!(call.kind, CallKind::EchoTest { .. })
+            && !attendee
+            && !forbidden
+    }
+
+    /// The organizer's name, for the recording's metadata.
+    fn meeting_organizer(&self, call: &ActiveCall) -> String {
+        let session = call.session.as_ref();
+        session
+            .and_then(|s| {
+                s.roster.values().find(|p| {
+                    p.role
+                        .as_deref()
+                        .is_some_and(|r| r.eq_ignore_ascii_case("organizer"))
+                })
+            })
+            .and_then(|p| p.display_name.clone().or_else(|| self.known_name(&p.id)))
+            .or_else(|| match &call.kind {
+                CallKind::Meeting(meeting) => meeting
+                    .organizer_id
+                    .as_ref()
+                    .and_then(|id| self.known_name(&format!("8:orgid:{id}"))),
+                _ => None,
+            })
+            .unwrap_or_else(|| self.display_name.clone())
+    }
+
+    fn start_recording(&mut self) -> Task<Msg> {
+        let g = self.generation;
+        let Some(client) = self.client.clone() else {
+            return Task::none();
+        };
+        let Some(call) = self.call.active.as_mut().filter(|c| c.in_phase(Phase::Connected))
+        else {
+            return Task::none();
+        };
+        if call.recorder_token_pending {
+            return Task::none();
+        }
+        call.recorder_token_pending = true;
+        call.recording_error = None;
+        let id = call.id.clone();
+        let auth = client.authenticator();
+        Task::perform(
+            async move {
+                let mut headers = http::HeaderMap::new();
+                teams_auth::Authenticator::authorize(
+                    &*auth,
+                    teams_auth::Service::CallRecorder,
+                    &mut headers,
+                )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.strip_prefix("Bearer "))
+                    .unwrap_or_default()
+                    .to_owned())
+            },
+            move |result| Msg::Call(CallMsg::RecorderToken(g, id, result)),
+        )
+    }
+
+    fn recorder_token(&mut self, g: u64, id: &str, result: Result<String, String>) -> Task<Msg> {
+        if !self.is_active(g, id) {
+            return Task::none();
+        }
+        let organizer = match self.call.active.as_ref() {
+            Some(call) => self.meeting_organizer(call),
+            None => return Task::none(),
+        };
+        let Some(call) = self.call.active.as_mut() else {
+            return Task::none();
+        };
+        call.recorder_token_pending = false;
+        let token = match result {
+            Ok(token) => token,
+            Err(error) => {
+                call.recording_error = Some(tf!("core.call.recording_failed", error = error));
+                return Task::none();
+            }
+        };
+        let request = payload::recording::Request {
+            token,
+            title: call.title.clone(),
+            organizer,
+            ical_uid: None,
+            file_name: recording_file_name(&call.title),
+            correlation_id: uuid::Uuid::new_v4().to_string(),
+        };
+        self.step(Input::StartRecording(request))
     }
 
     fn conversation_client(&self) -> Option<ConversationClient<AppAuthenticator>> {
@@ -907,12 +1109,20 @@ impl App {
                 self.session_input(g, &id, Input::Response(op, result))
             }
             CallMsg::Timer(g, id, timer) => self.session_input(g, &id, Input::Timeout(timer)),
+            CallMsg::RecorderToken(g, id, result) => self.recorder_token(g, &id, result),
             CallMsg::Action(action) => self.call_action(action),
         }
     }
 
     fn call_action(&mut self, action: CallAction) -> Task<Msg> {
         match action {
+            CallAction::StartRecording => self.start_recording(),
+            CallAction::StopRecording => {
+                if let Some(call) = self.call.active.as_mut() {
+                    call.recording_error = None;
+                }
+                self.step(Input::StopRecording)
+            }
             CallAction::Start { mri, video } => {
                 let mri = mri.trim().to_owned();
                 if !(mri.starts_with("8:") || mri.starts_with("4:") || mri.starts_with("28:")) {

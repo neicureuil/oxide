@@ -7,6 +7,8 @@ use serde_json::Value;
 use teams_auth::{Authenticator, Service};
 use url::Url;
 
+use crate::session::Op;
+
 /// `TsCallingVersion` of the `X-Microsoft-Skype-Client` header.
 const TS_CALLING_VERSION: &str = "2026.42.01.1";
 /// Signalling requests fail faster than other service calls.
@@ -81,6 +83,69 @@ impl<A: Authenticator> ConversationClient<A> {
             || url.scheme() == "https"
                 && (host == "teams.microsoft.com"
                     || TRUSTED_SUFFIXES.iter().any(|suffix| host.ends_with(suffix)))
+    }
+
+    /// Sends a session's command with the credentials its `op` needs.
+    pub async fn send_op(
+        &self,
+        call_id: &str,
+        op: Op,
+        method: Method,
+        url: &str,
+        body: &Value,
+    ) -> Result<Value, u16> {
+        match op {
+            Op::RecorderCommand(_) => self.send_to_recorder(call_id, url, body).await,
+            _ => self.send(call_id, method, url, body).await,
+        }
+    }
+
+    /// `CallingBotRestClient.sendCommand`: POST to the bot's `commandUrl` with the recorder's AAD token only.
+    async fn send_to_recorder(&self, call_id: &str, url: &str, body: &Value) -> Result<Value, u16> {
+        let url = Url::parse(url).map_err(|_| FORBIDDEN_HOST)?;
+        // `isTrustedCommandUrl` with the web client's empty domain list: any https host.
+        if url.scheme() != "https" && !self.trusted(&url) {
+            return Err(FORBIDDEN_HOST);
+        }
+        crate::diagnostics::record(&format!(
+            "recorder command host={}",
+            url.host_str().unwrap_or_default()
+        ));
+        for attempt in 0..2 {
+            let mut headers = HeaderMap::new();
+            self.auth
+                .authorize(Service::CallRecorder, &mut headers)
+                .await
+                .map_err(|_| AUTH_ERROR)?;
+            for (name, value) in [
+                ("requestid", uuid::Uuid::new_v4().to_string()),
+                ("x-microsoft-skype-chain-id", call_id.to_owned()),
+            ] {
+                if let Ok(value) = HeaderValue::from_str(&value) {
+                    headers.insert(name, value);
+                }
+            }
+            let response = self
+                .http
+                .post(url.clone())
+                .headers(headers)
+                .json(body)
+                .timeout(REQUEST_TIMEOUT)
+                .send()
+                .await
+                .map_err(|_| NETWORK_ERROR)?;
+            let status = response.status().as_u16();
+            crate::diagnostics::record(&format!("recorder status={status}"));
+            if status == 401 && attempt == 0 && self.auth.on_unauthorized(Service::CallRecorder).await {
+                continue;
+            }
+            if !(200..300).contains(&status) {
+                return Err(status);
+            }
+            let bytes = response.bytes().await.unwrap_or_default();
+            return Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null));
+        }
+        Err(401)
     }
 
     /// Sends one command. `Err` carries the HTTP status, [`NETWORK_ERROR`] or [`FORBIDDEN_HOST`].

@@ -28,13 +28,29 @@ final class WebRTCMediaEngine: NSObject, MediaEngine {
     var factory: LKRTCPeerConnectionFactory {
         if let factoryStorage { return factoryStorage }
         _ = Self.initializeSSL
+        // The microphone after processing goes through `microphoneTap`, for the local recording. Set through the
+        // property: this build ignores the delegate given to the initializer.
+        let processing = LKRTCDefaultAudioProcessingModule(
+            config: nil, capturePostProcessingDelegate: nil, renderPreProcessingDelegate: nil
+        )
+        processing.capturePostProcessingDelegate = microphoneTap
         let factory = LKRTCPeerConnectionFactory(
+            audioDeviceModuleType: .platformDefault,
+            bypassVoiceProcessing: false,
             encoderFactory: LKRTCDefaultVideoEncoderFactory(),
-            decoderFactory: LKRTCDefaultVideoDecoderFactory()
+            decoderFactory: LKRTCDefaultVideoDecoderFactory(),
+            audioProcessingModule: processing
         )
         factoryStorage = factory
         return factory
     }
+    /// Held here: the processing module keeps its delegate weakly. A no-op unless recording.
+    @ObservationIgnored let microphoneTap = MicrophoneTap()
+    @ObservationIgnored var recorder: LocalRecorder?
+    /// Renderers on the participants' audio tracks while recording.
+    @ObservationIgnored var remoteTaps: [(track: LKRTCAudioTrack, tap: RemoteAudioTap)] = []
+    var localRecordingStarted: Date?
+    var lastLocalRecording: URL?
     @ObservationIgnored var callId: String?
     @ObservationIgnored var connection: LKRTCPeerConnection?
     @ObservationIgnored var audioTrack: LKRTCAudioTrack?
@@ -90,6 +106,7 @@ final class WebRTCMediaEngine: NSObject, MediaEngine {
 
     func close(callId: String) {
         guard self.callId == callId else { return }
+        _ = stopLocalRecording()
         gatheringTimeout?.cancel()
         connectionTimeout?.cancel()
         reconnection?.cancel()

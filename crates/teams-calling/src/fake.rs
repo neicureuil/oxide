@@ -25,6 +25,8 @@ pub struct Seen {
     pub rejects: u32,
     pub ringing: u32,
     pub acknowledgements: u32,
+    /// Bodies sent to the recorder bot's `commandUrl`, with their `authorization` header.
+    pub recorder_commands: Vec<(Value, Option<String>)>,
 }
 
 struct Inner {
@@ -176,15 +178,38 @@ impl FakeConversation {
 
     /// Someone joins or leaves (`None`) the meeting.
     pub fn roster(&self, id: &str, name: Option<&str>) {
+        let entry = name
+            .map(|n| json!({"displayName": n}))
+            .unwrap_or(Value::Null);
+        self.roster_entry(id, entry);
+    }
+
+    /// A raw roster entry for `id` (`null`: gone).
+    pub fn roster_entry(&self, id: &str, entry: Value) {
         if let Some(url) = self.link("/conversationRequest/roster/rosterUpdate") {
-            let entry = name
-                .map(|n| json!({"displayName": n}))
-                .unwrap_or(Value::Null);
             self.callback(
                 &url,
                 json!({"sequenceNumber": self.next_sequence(), "participants": {id: entry}}),
             );
         }
+    }
+
+    /// The recorder bot's roster entry, recording (`by` started it) or not.
+    pub fn recorder(&self, call: &str, state: &str, by: Option<&str>) {
+        let command_url = self.0.base.join(&format!("c/{call}/record")).unwrap();
+        self.roster_entry(
+            crate::payload::recording::BOT_MRIS[0],
+            json!({
+                "displayName": "Recorder",
+                "endpoints": {"bot": {
+                    "call": {},
+                    "endpointMetadata": {
+                        "commandUrl": command_url.as_str(),
+                        "processingModes": {"recording": {"state": state, "userId": by}},
+                    },
+                }},
+            }),
+        );
     }
 
     /// The organizer ends the meeting for everyone.
@@ -278,11 +303,24 @@ async fn join(
 
 async fn operation(
     State(fake): State<FakeConversation>,
-    Path((_id, op)): Path<(String, String)>,
+    Path((id, op)): Path<(String, String)>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
     let mut seen = fake.0.seen.lock().unwrap();
     match op.as_str() {
+        "record" => {
+            let authorization = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            seen.recorder_commands.push((body.clone(), authorization));
+            drop(seen);
+            let start = body.get("action").and_then(Value::as_str) == Some("start");
+            let by = body.get("participantMri").and_then(Value::as_str);
+            fake.recorder(&id, if start { "Active" } else { "Inactive" }, by);
+            return (StatusCode::OK, Json(json!({})));
+        }
         "leave" => seen.leaves.push(body),
         "mute" | "unmute" => seen.mutes.push((op, body)),
         "links" => seen.keep_alives += 1,
@@ -296,8 +334,12 @@ async fn operation(
             );
             let added = seen.added.clone();
             drop(seen);
-            for id in added {
-                fake.roster(&id, Some("Echo Bot"));
+            for added in added {
+                if crate::payload::recording::is_bot(&added) {
+                    fake.recorder(&id, "Inactive", None);
+                } else {
+                    fake.roster(&added, Some("Echo Bot"));
+                }
             }
             return (StatusCode::OK, Json(json!({})));
         }
