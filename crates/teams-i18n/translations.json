@@ -2955,6 +2955,10 @@
     "fr": "Vous êtes déjà dans cette réunion sur un autre appareil.",
     "en": "You’re already in this meeting on another device."
   },
+  "ui.call_window.reconnecting": {
+    "fr": "Connexion perdue, reconnexion…",
+    "en": "Connection lost, reconnecting…"
+  },
   "ui.call_window.you_re_sharing_your_screen": {
     "fr": "Vous partagez votre écran.",
     "en": "You’re sharing your screen."

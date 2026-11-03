@@ -83,6 +83,58 @@ final class MediaEngineTests: XCTestCase {
         engine.close(callId: "call")
     }
 
+    /// A connection that fails after being up gets new ICE credentials offered instead of ending the call.
+    func testAFailureAfterConnectingRestartsIceInsteadOfEndingTheCall() async throws {
+        let (engine, connection, service) = try await negotiatedCall()
+        var events: [MediaEvent] = []
+        engine.onEvent = { events.append($0) }
+        engine.diagnostics.connected = true
+        let before = try XCTUnwrap(connection.localDescription?.sdp)
+
+        engine.peerConnection(connection, didChange: LKRTCPeerConnectionState.failed)
+        try await waitUntil { events.contains { if case .localDescription = $0 { true } else { false } } }
+
+        XCTAssertTrue(engine.reconnecting)
+        XCTAssertFalse(events.contains { if case .failed = $0 { true } else { false } }, "\(events)")
+        let offer = try XCTUnwrap(connection.localDescription?.sdp)
+        XCTAssertNotEqual(Self.iceUfrag(offer), Self.iceUfrag(before))
+        service.close()
+        engine.close(callId: "call")
+        XCTAssertFalse(engine.reconnecting)
+    }
+
+    /// Nothing comes back within the time limit: the call ends.
+    func testAReconnectionThatRunsOutOfTimeEndsTheCall() async throws {
+        let (engine, connection, service) = try await negotiatedCall()
+        var events: [MediaEvent] = []
+        engine.onEvent = { events.append($0) }
+        engine.diagnostics.connected = true
+        engine.reconnectTimeLimit = .milliseconds(500)
+
+        engine.peerConnection(connection, didChange: LKRTCPeerConnectionState.failed)
+        try await waitUntil { events.contains { if case .failed = $0 { true } else { false } } }
+
+        XCTAssertFalse(engine.reconnecting)
+        service.close()
+    }
+
+    /// Media that never came up is not retried, as in the web client (`initialReconnectTimeLimit` 0).
+    func testAFailureBeforeConnectingEndsTheCall() async throws {
+        let (engine, connection, service) = try await negotiatedCall()
+        var events: [MediaEvent] = []
+        engine.onEvent = { events.append($0) }
+
+        engine.peerConnection(connection, didChange: LKRTCPeerConnectionState.failed)
+        try await waitUntil { events.contains { if case .failed = $0 { true } else { false } } }
+
+        XCTAssertFalse(engine.reconnecting)
+        service.close()
+    }
+
+    private static func iceUfrag(_ sdp: String) -> Substring? {
+        sdp.split(separator: "\r\n").first { $0.hasPrefix("a=ice-ufrag:") }
+    }
+
     /// An engine whose first offer (audio and one camera line, receive-only) the service answered.
     private func negotiatedCall() async throws -> (WebRTCMediaEngine, LKRTCPeerConnection, LKRTCPeerConnection) {
         let engine = WebRTCMediaEngine()

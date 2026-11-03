@@ -13,6 +13,7 @@ final class WebRTCMediaEngine: NSObject, MediaEngine {
     var remoteVideos: [String: LKRTCVideoTrack] = [:]
     var speakingSources: Set<UInt32> = []
     var localSpeaking = false
+    var reconnecting = false
     var diagnostics = CallDiagnostics()
     @ObservationIgnored var statsTask: Task<Void, Never>?
     @ObservationIgnored var speakingTask: Task<Void, Never>?
@@ -57,6 +58,9 @@ final class WebRTCMediaEngine: NSObject, MediaEngine {
     @ObservationIgnored var answeringRenegotiation = false
     @ObservationIgnored var gatheringTimeout: Task<Void, Never>?
     @ObservationIgnored var connectionTimeout: Task<Void, Never>?
+    @ObservationIgnored var reconnection: Task<Void, Never>?
+    /// The web client's `reconnectTimeLimit`: how long a call that was connected tries to get its media back.
+    @ObservationIgnored var reconnectTimeLimit: Duration = .seconds(90)
 
     var constraints: LKRTCMediaConstraints {
         LKRTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
@@ -88,6 +92,9 @@ final class WebRTCMediaEngine: NSObject, MediaEngine {
         guard self.callId == callId else { return }
         gatheringTimeout?.cancel()
         connectionTimeout?.cancel()
+        reconnection?.cancel()
+        reconnection = nil
+        reconnecting = false
         stopCamera()
         stopScreenCapture()
         chosenScreen = nil

@@ -370,6 +370,9 @@ private struct InCallView: View {
             if call.sharingScreen && call.phase == .connected {
                 Banner(symbol: "rectangle.on.rectangle", text: L("ui.call_window.you_re_sharing_your_screen"), tint: Theme.accentSoft)
             }
+            if store.media.reconnecting && call.phase == .connected {
+                Banner(symbol: "wifi.exclamationmark", text: L("ui.call_window.reconnecting"), tint: Theme.errorBackground)
+            }
             if let error = store.call?.error {
                 Banner(symbol: "exclamationmark.triangle", text: error, tint: Theme.errorBackground)
             }
