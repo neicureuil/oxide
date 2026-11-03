@@ -1123,6 +1123,14 @@ public struct ActiveCallView: Equatable, Hashable {
      * Incoming call offered with video.
      */
     public var offersVideo: Bool
+    /**
+     * Cloud recording of the call, whoever started it.
+     */
+    public var recording: RecordingView
+    /**
+     * We may ask the service to record (not an attendee, meeting allows it).
+     */
+    public var canRecord: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1153,7 +1161,13 @@ public struct ActiveCallView: Equatable, Hashable {
          */canAccept: Bool, 
         /**
          * Incoming call offered with video.
-         */offersVideo: Bool) {
+         */offersVideo: Bool, 
+        /**
+         * Cloud recording of the call, whoever started it.
+         */recording: RecordingView, 
+        /**
+         * We may ask the service to record (not an attendee, meeting allows it).
+         */canRecord: Bool) {
         self.id = id
         self.title = title
         self.phase = phase
@@ -1172,6 +1186,8 @@ public struct ActiveCallView: Equatable, Hashable {
         self.isMeeting = isMeeting
         self.canAccept = canAccept
         self.offersVideo = offersVideo
+        self.recording = recording
+        self.canRecord = canRecord
     }
 
     
@@ -1207,7 +1223,9 @@ public struct FfiConverterTypeActiveCallView: FfiConverterRustBuffer {
                 isTest: FfiConverterBool.read(from: &buf), 
                 isMeeting: FfiConverterBool.read(from: &buf), 
                 canAccept: FfiConverterBool.read(from: &buf), 
-                offersVideo: FfiConverterBool.read(from: &buf)
+                offersVideo: FfiConverterBool.read(from: &buf), 
+                recording: FfiConverterTypeRecordingView.read(from: &buf), 
+                canRecord: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -1230,6 +1248,8 @@ public struct FfiConverterTypeActiveCallView: FfiConverterRustBuffer {
         FfiConverterBool.write(value.isMeeting, into: &buf)
         FfiConverterBool.write(value.canAccept, into: &buf)
         FfiConverterBool.write(value.offersVideo, into: &buf)
+        FfiConverterTypeRecordingView.write(value.recording, into: &buf)
+        FfiConverterBool.write(value.canRecord, into: &buf)
     }
 }
 
@@ -10008,6 +10028,11 @@ public enum CallAction: Equatable, Hashable {
     case renegotiationAnswer(callId: String, sdp: String
     )
     /**
+     * Cloud recording (OneDrive `Recordings`), as the web client's Record button.
+     */
+    case startRecording
+    case stopRecording
+    /**
      * The Mac woke up or changed network: reconnect the push channel and restart ICE.
      */
     case networkChanged
@@ -10096,7 +10121,11 @@ public struct FfiConverterTypeCallAction: FfiConverterRustBuffer {
         case 23: return .renegotiationAnswer(callId: try FfiConverterString.read(from: &buf), sdp: try FfiConverterString.read(from: &buf)
         )
         
-        case 24: return .networkChanged
+        case 24: return .startRecording
+        
+        case 25: return .stopRecording
+        
+        case 26: return .networkChanged
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -10228,8 +10257,16 @@ public struct FfiConverterTypeCallAction: FfiConverterRustBuffer {
             FfiConverterString.write(sdp, into: &buf)
             
         
-        case .networkChanged:
+        case .startRecording:
             writeInt(&buf, Int32(24))
+        
+        
+        case .stopRecording:
+            writeInt(&buf, Int32(25))
+        
+        
+        case .networkChanged:
+            writeInt(&buf, Int32(26))
         
         }
     }
@@ -14698,6 +14735,108 @@ public func FfiConverterTypeReceiptView_lift(_ buf: RustBuffer) throws -> Receip
 #endif
 public func FfiConverterTypeReceiptView_lower(_ value: ReceiptView) -> RustBuffer {
     return FfiConverterTypeReceiptView.lower(value)
+}
+
+
+
+
+public enum RecordingView: Equatable, Hashable {
+    
+    case none
+    /**
+     * The recorder is being added or told to start.
+     */
+    case starting
+    /**
+     * Recording; `by` names who started it, when known.
+     */
+    case active(by: String?
+    )
+    case stopping
+    /**
+     * Our request to record failed.
+     */
+    case failed(reason: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RecordingView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRecordingView: FfiConverterRustBuffer {
+    typealias SwiftType = RecordingView
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RecordingView {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .none
+        
+        case 2: return .starting
+        
+        case 3: return .active(by: try FfiConverterOptionString.read(from: &buf)
+        )
+        
+        case 4: return .stopping
+        
+        case 5: return .failed(reason: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: RecordingView, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .none:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .starting:
+            writeInt(&buf, Int32(2))
+        
+        
+        case let .active(by):
+            writeInt(&buf, Int32(3))
+            FfiConverterOptionString.write(by, into: &buf)
+            
+        
+        case .stopping:
+            writeInt(&buf, Int32(4))
+        
+        
+        case let .failed(reason):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(reason, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecordingView_lift(_ buf: RustBuffer) throws -> RecordingView {
+    return try FfiConverterTypeRecordingView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecordingView_lower(_ value: RecordingView) -> RustBuffer {
+    return FfiConverterTypeRecordingView.lower(value)
 }
 
 

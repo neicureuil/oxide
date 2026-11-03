@@ -142,6 +142,73 @@ pub struct RosterEntry {
     pub sharing_sources: Vec<u32>,
     /// Microphone off on every device in the call.
     pub muted: bool,
+    /// The cloud recording bot's endpoint metadata, when this is the bot.
+    pub recorder: Option<Recorder>,
+}
+
+/// `processingModes.recording.state` of the recorder bot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecorderState {
+    Inactive,
+    Active,
+    WaitingForMeetingLive,
+    Paused,
+}
+
+/// The recorder bot as its roster entry describes it (`endpoints[].endpointMetadata`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recorder {
+    /// Where `start` / `stop` go.
+    pub command_url: Option<String>,
+    pub state: RecorderState,
+    /// Who started (or stopped) the recording: `processingModes.recording.userId`.
+    pub user_id: Option<String>,
+}
+
+impl Recorder {
+    /// `endpointMetadata` comes as an object or as a JSON string.
+    fn parse(entry: &Value) -> Option<Self> {
+        let endpoints = entry.get("endpoints")?;
+        let list: Vec<&Value> = match endpoints {
+            Value::Object(map) => map.values().collect(),
+            Value::Array(list) => list.iter().collect(),
+            _ => return None,
+        };
+        list.into_iter().find_map(|endpoint| {
+            let metadata = match endpoint.get("endpointMetadata")? {
+                Value::String(raw) => serde_json::from_str::<Value>(raw).ok()?,
+                other => other.clone(),
+            };
+            let mode = metadata.pointer("/processingModes/recording");
+            let state = match mode.and_then(|m| m.get("state")).and_then(Value::as_str) {
+                Some("Active") => RecorderState::Active,
+                Some("WaitingForMeetingLive") => RecorderState::WaitingForMeetingLive,
+                Some("Paused") => RecorderState::Paused,
+                _ => RecorderState::Inactive,
+            };
+            let command_url = text(metadata.get("commandUrl"))
+                // `isTrustedCommandUrl`: https only (the configured domain list is empty).
+                .filter(|url| url.starts_with("https://"));
+            (command_url.is_some() || mode.is_some()).then(|| Recorder {
+                command_url,
+                state,
+                user_id: text(mode.and_then(|m| m.get("userId"))),
+            })
+        })
+    }
+}
+
+/// Where our own request to record stands; the bot's roster entry tells the rest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recording {
+    Idle,
+    /// The bot is being added; `start` goes once it shows up in the roster.
+    Inviting(payload::recording::Request),
+    /// `start` sent: waiting for the bot to report `Active`.
+    Starting,
+    Stopping,
+    /// The bot could not be added or refused the command.
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +238,10 @@ pub enum Op {
     EndForAll,
     Mute(bool),
     KeepAlive,
+    /// Adding the recorder bot.
+    RecorderInvite,
+    /// `start` (true) or `stop` to the bot's `commandUrl`, with the recorder's AAD token.
+    RecorderCommand(bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +274,9 @@ pub enum Input {
     Hangup,
     Decline,
     SetMuted(bool),
+    /// Cloud recording: add the recorder bot (if needed) and tell it to start.
+    StartRecording(payload::recording::Request),
+    StopRecording,
     Timeout(Timer),
 }
 
@@ -287,6 +361,9 @@ pub struct CallSession {
     controller: Option<String>,
     links: BTreeMap<String, String>,
     sequence: Option<i64>,
+    pub recording: Recording,
+    /// `meetingDetails` of the latest conversation update: capabilities such as `allowCloudRecording`.
+    pub meeting_details: Option<Value>,
 }
 
 fn text(value: Option<&Value>) -> Option<String> {
@@ -362,6 +439,8 @@ impl CallSession {
             controller: None,
             links: BTreeMap::new(),
             sequence: None,
+            recording: Recording::Idle,
+            meeting_details: None,
         }
     }
 
@@ -448,6 +527,9 @@ impl CallSession {
         }
         if let Some(me) = body.get("selfParticipant").filter(|v| v.is_object()) {
             self.self_participant = Some(me.clone());
+        }
+        if let Some(details) = body.get("meetingDetails").filter(|v| v.is_object()) {
+            self.meeting_details = Some(details.clone());
         }
         if let Some(controller) = text(body.get("conversationController")) {
             self.controller = Some(controller);
@@ -560,6 +642,9 @@ impl CallSession {
                             })
                     })
             },
+            recorder: payload::recording::is_bot(id)
+                .then(|| Recorder::parse(value))
+                .flatten(),
         };
         match roster.get("participants") {
             Some(Value::Object(map)) => {
@@ -689,6 +774,8 @@ impl CallSession {
                     None => Vec::new(),
                 }
             }
+            Input::StartRecording(request) => self.start_recording(request),
+            Input::StopRecording => self.stop_recording(),
             Input::Timeout(Timer::Establish) => match self.phase {
                 // Nobody answered here: a missed call, the caller's side times out on its own.
                 Phase::Notified => self.end(EndReason::local(0, MISSED)),
@@ -968,6 +1055,102 @@ impl CallSession {
         commands
     }
 
+    /// The recorder bot, while it is in the call.
+    pub fn recorder(&self) -> Option<&Recorder> {
+        self.roster.values().find_map(|entry| entry.recorder.as_ref())
+    }
+
+    fn chat_thread(&self) -> Option<&str> {
+        match &self.kind {
+            CallKind::Meeting(meeting) => Some(&meeting.thread_id),
+            CallKind::Outgoing { chat_thread, .. } | CallKind::EchoTest { chat_thread, .. } => {
+                chat_thread.as_deref()
+            }
+            CallKind::Incoming(_) => None,
+        }
+    }
+
+    fn recorder_command(&self, start: Option<&payload::recording::Request>) -> Option<Command> {
+        let url = self.recorder()?.command_url.clone()?;
+        Some(Self::http(
+            Op::RecorderCommand(start.is_some()),
+            Method::POST,
+            url,
+            payload::recording::command(&self.local, start),
+        ))
+    }
+
+    /// `startRecording`: invite the bot, or tell it to start when it is already in the call.
+    fn start_recording(&mut self, request: payload::recording::Request) -> Vec<Command> {
+        if self.phase != Phase::Connected
+            || matches!(self.recording, Recording::Inviting(_) | Recording::Starting)
+        {
+            return Vec::new();
+        }
+        if let Some(command) = self.recorder_command(Some(&request)) {
+            self.recording = Recording::Starting;
+            return vec![command];
+        }
+        // `addParticipantAndModality` when the call has a thread, like the web client.
+        let link = self
+            .chat_thread()
+            .and_then(|_| self.link("addParticipantAndModality"))
+            .or_else(|| self.link("addParticipant"))
+            .map(str::to_owned);
+        let Some(url) = link else {
+            self.recording = Recording::Failed;
+            return Vec::new();
+        };
+        let body = payload::recording::invite(
+            &self.local,
+            &self.callbacks,
+            &self.id,
+            self.chat_thread(),
+            &request,
+        );
+        self.recording = Recording::Inviting(request);
+        vec![Self::http(Op::RecorderInvite, Method::POST, url, body)]
+    }
+
+    fn stop_recording(&mut self) -> Vec<Command> {
+        match self.recorder_command(None) {
+            Some(command) => {
+                self.recording = Recording::Stopping;
+                vec![command]
+            }
+            None => {
+                self.recording = Recording::Idle;
+                Vec::new()
+            }
+        }
+    }
+
+    /// `onBotStateChanged`: once the invited bot is in, send `start`; settle once it reports.
+    fn drive_recording(&mut self) -> Vec<Command> {
+        let state = self.recorder().map(|r| r.state);
+        match &self.recording {
+            Recording::Inviting(request) => {
+                if state.is_some_and(|s| s != RecorderState::Active) {
+                    let request = request.clone();
+                    if let Some(command) = self.recorder_command(Some(&request)) {
+                        self.recording = Recording::Starting;
+                        return vec![command];
+                    }
+                } else if state == Some(RecorderState::Active) {
+                    self.recording = Recording::Idle;
+                }
+            }
+            Recording::Starting if state.is_some_and(|s| s != RecorderState::Inactive) => {
+                self.recording = Recording::Idle;
+            }
+            Recording::Stopping if state.is_none_or(|s| s == RecorderState::Inactive) => {
+                self.recording = Recording::Idle;
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
     fn someone_called_answered(&self) -> bool {
         let CallKind::Outgoing { to, .. } = &self.kind else {
             return false;
@@ -1156,6 +1339,15 @@ impl CallSession {
                 Vec::new()
             }
             (Op::KeepAlive, Err(_)) => Vec::new(),
+            (Op::RecorderInvite, Ok(body)) => {
+                self.apply(&body);
+                self.drive_recording()
+            }
+            (Op::RecorderInvite | Op::RecorderCommand(_), Err(_)) => {
+                self.recording = Recording::Failed;
+                Vec::new()
+            }
+            (Op::RecorderCommand(_), Ok(_)) => self.drive_recording(),
         }
     }
 
@@ -1193,6 +1385,12 @@ impl CallSession {
                 self.end(reason)
             }
             (Scope::Conversation, "addParticipantFailure")
+                if matches!(self.recording, Recording::Inviting(_)) =>
+            {
+                self.recording = Recording::Failed;
+                Vec::new()
+            }
+            (Scope::Conversation, "addParticipantFailure")
                 if matches!(self.kind, CallKind::EchoTest { .. }) =>
             {
                 self.hang_up(EndReason::local(480, ECHO_BOT_UNAVAILABLE))
@@ -1217,6 +1415,7 @@ impl CallSession {
                 self.promote_when_answered();
                 let mut commands = self.remove_other_devices();
                 commands.extend(self.request_videos());
+                commands.extend(self.drive_recording());
                 commands
             }
             (Scope::Conversation, _) => {
@@ -2482,5 +2681,135 @@ mod tests {
         );
         session.handle(Input::Response(Op::Reject, Ok(Value::Null)));
         assert!(matches!(&session.phase, Phase::Ended(r) if r.code == 603));
+    }
+
+    fn recording_request() -> payload::recording::Request {
+        payload::recording::Request {
+            token: "aad".into(),
+            title: "Point hebdo".into(),
+            organizer: "Organisatrice".into(),
+            ical_uid: None,
+            file_name: "Point hebdo-20261030_101500-Meeting Recording".into(),
+            correlation_id: "corr".into(),
+        }
+    }
+
+    fn recorder_roster(state: &str, by: Option<&str>) -> Value {
+        json!({"participants": {payload::recording::BOT_MRIS[0]: {
+            "displayName": "Recorder",
+            "endpoints": {"bot": {"call": {}, "endpointMetadata": {
+                "commandUrl": "https://bot.example/command",
+                "processingModes": {"recording": {"state": state, "userId": by}},
+            }}},
+        }}})
+    }
+
+    fn with_add_links(session: &mut CallSession) {
+        callback(
+            session,
+            Scope::Conversation,
+            "conversationUpdate",
+            json!({"links": {"addParticipant": "https://conv.example/c1/add",
+                             "addParticipantAndModality": "https://conv.example/c1/addm"}}),
+        );
+    }
+
+    #[test]
+    fn recording_invites_the_bot_then_starts_it_once_it_is_in_the_roster() {
+        let mut session = meeting(None);
+        joined(&mut session);
+        with_add_links(&mut session);
+        let commands = session.handle(Input::StartRecording(recording_request()));
+        let [Command::Http { op, url, body, .. }] = commands.as_slice() else {
+            panic!("one invite: {commands:?}");
+        };
+        assert_eq!(*op, Op::RecorderInvite);
+        assert_eq!(url, "https://conv.example/c1/addm", "meetings use addParticipantAndModality");
+        assert_eq!(body.pointer("/participants/to/0/id"), Some(&json!(payload::recording::BOT_MRIS[0])));
+        assert_eq!(body.pointer("/participantInvitationData/botData/mode"), Some(&json!("Recording")));
+        assert_eq!(body.pointer("/participantInvitationData/botData/initiatorUserToken"), Some(&json!("aad")));
+        assert_eq!(body.pointer("/groupChat/threadId"), Some(&json!("19:meeting_x@thread.v2")));
+
+        let commands = callback(&mut session, Scope::Conversation, "rosterUpdate", recorder_roster("Inactive", None));
+        let starts: Vec<_> = commands
+            .iter()
+            .filter_map(|c| match c {
+                Command::Http { op: Op::RecorderCommand(true), url, body, .. } => Some((url, body)),
+                _ => None,
+            })
+            .collect();
+        let [(url, body)] = starts.as_slice() else { panic!("one start: {commands:?}") };
+        assert_eq!(*url, "https://bot.example/command");
+        assert_eq!(body["action"], "start");
+        assert_eq!(body["processingModes"], json!(["recording"]));
+        assert_eq!(body["participantLegId"], "p");
+        assert_eq!(
+            body.pointer("/actionParameters/recordingStorageSettings/0/StorageType"),
+            Some(&json!("OnedriveForBusiness"))
+        );
+        assert_eq!(session.recording, Recording::Starting);
+
+        // The same roster again does not start it twice.
+        let again = callback(&mut session, Scope::Conversation, "rosterUpdate", recorder_roster("Inactive", None));
+        assert!(!again.iter().any(|c| matches!(c, Command::Http { op: Op::RecorderCommand(_), .. })));
+
+        callback(&mut session, Scope::Conversation, "rosterUpdate", recorder_roster("Active", Some("8:orgid:me")));
+        assert_eq!(session.recording, Recording::Idle);
+        let recorder = session.recorder().expect("bot in the roster");
+        assert_eq!(recorder.state, RecorderState::Active);
+        assert_eq!(recorder.user_id.as_deref(), Some("8:orgid:me"));
+    }
+
+    #[test]
+    fn stopping_sends_stop_to_the_bot_and_settles_when_it_reports_inactive() {
+        let mut session = meeting(None);
+        joined(&mut session);
+        callback(&mut session, Scope::Conversation, "rosterUpdate", recorder_roster("Active", Some("8:orgid:bob")));
+        let commands = session.handle(Input::StopRecording);
+        let [Command::Http { op: Op::RecorderCommand(false), body, .. }] = commands.as_slice() else {
+            panic!("one stop: {commands:?}");
+        };
+        assert_eq!(body["action"], "stop");
+        assert!(body.get("actionParameters").is_none());
+        assert_eq!(session.recording, Recording::Stopping);
+        callback(&mut session, Scope::Conversation, "rosterUpdate", recorder_roster("Inactive", Some("8:orgid:me")));
+        assert_eq!(session.recording, Recording::Idle);
+    }
+
+    #[test]
+    fn a_recorder_already_in_the_call_is_started_without_inviting_it_again() {
+        let mut session = meeting(None);
+        joined(&mut session);
+        with_add_links(&mut session);
+        callback(&mut session, Scope::Conversation, "rosterUpdate", recorder_roster("Inactive", None));
+        let commands = session.handle(Input::StartRecording(recording_request()));
+        assert!(matches!(commands.as_slice(), [Command::Http { op: Op::RecorderCommand(true), .. }]));
+    }
+
+    #[test]
+    fn a_refused_invite_marks_the_recording_failed() {
+        let mut session = meeting(None);
+        joined(&mut session);
+        with_add_links(&mut session);
+        session.handle(Input::StartRecording(recording_request()));
+        callback(&mut session, Scope::Conversation, "addParticipantFailure", json!({"code": 403}));
+        assert_eq!(session.recording, Recording::Failed);
+        assert!(!session.ended(), "a failed recording does not end the meeting");
+    }
+
+    #[test]
+    fn recorder_metadata_may_come_as_a_json_string() {
+        let mut session = meeting(None);
+        joined(&mut session);
+        let metadata = json!({"commandUrl": "https://bot.example/c", "processingModes": {"recording": {"state": "Active"}}});
+        callback(
+            &mut session,
+            Scope::Conversation,
+            "rosterUpdate",
+            json!({"participants": {payload::recording::BOT_MRIS[1]: {
+                "endpoints": {"bot": {"call": {}, "endpointMetadata": metadata.to_string()}},
+            }}}),
+        );
+        assert_eq!(session.recorder().map(|r| r.state), Some(RecorderState::Active));
     }
 }

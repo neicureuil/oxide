@@ -6,6 +6,40 @@ extension WebRTCMediaEngine {
     func setMuted(callId: String, muted: Bool) {
         guard self.callId == callId else { return }
         audioTrack?.isEnabled = !muted
+        microphoneTap.muted = muted
+    }
+
+    func startLocalRecording(callId: String, url: URL) throws {
+        guard self.callId == callId, let connection else { throw CocoaError(.featureUnsupported) }
+        _ = stopLocalRecording()
+        let recorder = try LocalRecorder(url: url)
+        self.recorder = recorder
+        microphoneTap.muted = audioTrack?.isEnabled != true
+        microphoneTap.input = recorder.makeInput()
+        connection.receivers.compactMap { $0.track as? LKRTCAudioTrack }.forEach(recordRemote)
+        localRecordingStarted = recorder.started
+        callTrace("local recording started")
+    }
+
+    func stopLocalRecording() -> URL? {
+        guard let recorder else { return nil }
+        microphoneTap.input = nil
+        remoteTaps.forEach { $0.track.remove($0.tap) }
+        remoteTaps = []
+        self.recorder = nil
+        localRecordingStarted = nil
+        callTrace("local recording stopped")
+        let url = recorder.stop()
+        lastLocalRecording = url
+        return url
+    }
+
+    /// Adds a participants' track to the recording in progress.
+    func recordRemote(_ track: LKRTCAudioTrack) {
+        guard let recorder, !remoteTaps.contains(where: { $0.track === track }) else { return }
+        let tap = RemoteAudioTap(recorder.makeInput())
+        track.add(tap)
+        remoteTaps.append((track, tap))
     }
 
     func setSpeaker(callId: String, on: Bool) {

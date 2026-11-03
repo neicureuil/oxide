@@ -400,6 +400,101 @@ pub fn notification_links(local: &Local, callbacks: &Callbacks) -> Value {
     })
 }
 
+/// Cloud recording, as the web client's `callRecording` config and `CallingBotRestClient`.
+pub mod recording {
+    use super::*;
+
+    /// `recordingBotMri`, then `recordingBotMrisFromAlternateRegions`.
+    pub const BOT_MRIS: [&str; 2] = [
+        "28:bdd75849-e0a6-4cce-8fc1-d7c0d4da43e5",
+        "28:4b25d9f8-18f5-4d09-a582-cd0a28f63181",
+    ];
+
+    pub fn is_bot(mri: &str) -> bool {
+        BOT_MRIS.iter().any(|bot| bot.eq_ignore_ascii_case(mri))
+    }
+
+    /// What the recorder needs to know about the meeting, and the initiator's token for it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Request {
+        /// AAD token for `callRecording.resource` (`initiatorUserToken`).
+        pub token: String,
+        pub title: String,
+        /// Display name of the organizer (`extendRecordingOrganzierPayloadInfo`).
+        pub organizer: String,
+        pub ical_uid: Option<String>,
+        /// `<title>-<local date time>-Meeting Recording`, as `getRecordingFileName`.
+        pub file_name: String,
+        pub correlation_id: String,
+    }
+
+    fn storage(request: &Request) -> Value {
+        json!([{
+            "StorageType": "OnedriveForBusiness",
+            "StorageLocation": "Recordings",
+            "FileName": request.file_name,
+        }])
+    }
+
+    /// `addParticipant(recordingBotMri, {participantInvitationData: {botData}})`.
+    pub fn invite(
+        local: &Local,
+        callbacks: &Callbacks,
+        call_id: &str,
+        chat_thread: Option<&str>,
+        request: &Request,
+    ) -> Value {
+        let mut body = add_participant(
+            local,
+            callbacks,
+            &[Target {
+                id: BOT_MRIS[0].into(),
+                display_name: None,
+            }],
+            chat_thread,
+        );
+        body["disableUnmute"] = json!(false);
+        body["participantInvitationData"] = json!({"botData": {
+            "meetingTitle": request.title,
+            "clientInfo": "Teams-general",
+            "callId": call_id,
+            "threadId": chat_thread,
+            "mode": "Recording",
+            "iCalUid": request.ical_uid,
+            "consumerType": "Teams",
+            "correlationId": request.correlation_id,
+            "initiatorUserToken": request.token,
+            "meetingOrganizer": request.organizer,
+            "recordingStorageSettings": storage(request),
+        }});
+        body
+    }
+
+    /// `sendCommand` to the bot's `commandUrl`: `start` with storage parameters, or `stop`.
+    pub fn command(local: &Local, start: Option<&Request>) -> Value {
+        let mut body = json!({
+            "timestamp": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "participantMri": local.id,
+            "participantLegId": local.participant_id,
+            "action": if start.is_some() { "start" } else { "stop" },
+            "mode": "recording",
+            "processingModes": ["recording"],
+            "participantSkypeToken": "",
+        });
+        if let Some(request) = start {
+            body["actionParameters"] = json!({
+                "recordingStorageSettings": storage(request),
+                "iCalUid": request.ical_uid,
+                "correlationId": request.correlation_id,
+                "meetingTitle": request.title,
+                "meetingOrganizer": request.organizer,
+                "type": "start",
+            });
+        }
+        body
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -76,6 +76,14 @@ protocol MediaEngine: AnyObject {
     func applySendLimits(callId: String, _ limits: SendLimits)
     /// Plays or silences the other participants on this device.
     func setSpeaker(callId: String, on: Bool)
+    /// When the local recording (this Mac only, audio) began; nil when not recording.
+    var localRecordingStarted: Date? { get }
+    /// Records the call's microphone and participants into `url` (`.m4a`) until stopped or the call closes.
+    func startLocalRecording(callId: String, url: URL) throws
+    /// Finishes the file; its location, or nil when nothing was recording.
+    func stopLocalRecording() -> URL?
+    /// The latest finished local recording (also when the call's end stopped it), until dismissed.
+    var lastLocalRecording: URL? { get set }
     func close(callId: String)
 }
 
@@ -130,5 +138,26 @@ final class DemoMediaEngine: MediaEngine {
     }
     func applySendLimits(callId: String, _ limits: SendLimits) {}
     func setSpeaker(callId: String, on: Bool) {}
-    func close(callId: String) {}
+    @ObservationIgnored private var recorder: LocalRecorder?
+    private(set) var localRecordingStarted: Date?
+    var lastLocalRecording: URL?
+    /// Silence, for as long as it records.
+    func startLocalRecording(callId: String, url: URL) throws {
+        _ = stopLocalRecording()
+        let recorder = try LocalRecorder(url: url)
+        self.recorder = recorder
+        localRecordingStarted = recorder.started
+    }
+    func stopLocalRecording() -> URL? {
+        defer {
+            recorder = nil
+            localRecordingStarted = nil
+        }
+        guard let url = recorder?.stop() else { return nil }
+        lastLocalRecording = url
+        return url
+    }
+    func close(callId: String) {
+        _ = stopLocalRecording()
+    }
 }

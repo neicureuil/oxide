@@ -927,6 +927,14 @@
     "fr": "C’est une discussion de réunion : utilisez « Rejoindre ».",
     "en": "This is a meeting chat: use “Join”."
   },
+  "core.call.recording_could_not_start": {
+    "fr": "L’enregistrement n’a pas pu démarrer.",
+    "en": "The recording couldn't start."
+  },
+  "core.call.recording_failed": {
+    "fr": "Impossible d’enregistrer : {error}",
+    "en": "Couldn't record: {error}"
+  },
   "core.call.this_meeting_may_be_recorded_or": {
     "fr": "Cette réunion peut être enregistrée ou transcrite : en restant, vous l’acceptez.",
     "en": "This meeting may be recorded or transcribed: by staying, you consent."
@@ -942,6 +950,10 @@
   "core.call.unrecognized_teams_meeting_link": {
     "fr": "Lien de réunion Teams non reconnu.",
     "en": "Unrecognized Teams meeting link."
+  },
+  "core.call.you": {
+    "fr": "vous",
+    "en": "you"
   },
   "core.calls.calls_channel_stopped": {
     "fr": "Canal d’appels arrêté : {reason}",
@@ -2771,6 +2783,10 @@
     "fr": "Fermer",
     "en": "Close"
   },
+  "ui.call_window.could_not_record_on_this_mac": {
+    "fr": "Impossible d’enregistrer sur ce Mac : {error}",
+    "en": "Couldn't record on this Mac: {error}"
+  },
   "ui.call_window.decline": {
     "fr": "Refuser",
     "en": "Decline"
@@ -2778,6 +2794,10 @@
   "ui.call_window.device_not_connected": {
     "fr": "Périphérique non connecté",
     "en": "Device not connected"
+  },
+  "ui.call_window.dismiss": {
+    "fr": "Fermer",
+    "en": "Dismiss"
   },
   "ui.call_window.hide_notifications_during_this_call": {
     "fr": "Masquer les notifications pendant cet appel",
@@ -2875,6 +2895,34 @@
     "fr": "Présentateur",
     "en": "Presenter"
   },
+  "ui.call_window.record": {
+    "fr": "Enregistrer",
+    "en": "Record"
+  },
+  "ui.call_window.record_in_teams": {
+    "fr": "Enregistrer dans Teams (OneDrive)",
+    "en": "Record in Teams (OneDrive)"
+  },
+  "ui.call_window.record_on_this_mac_audio": {
+    "fr": "Enregistrer sur ce Mac (audio)",
+    "en": "Record on this Mac (audio)"
+  },
+  "ui.call_window.recording_in_teams": {
+    "fr": "Cette réunion est enregistrée dans Teams.",
+    "en": "This meeting is being recorded in Teams."
+  },
+  "ui.call_window.recording_on_this_mac": {
+    "fr": "Enregistrement audio sur ce Mac",
+    "en": "Recording audio on this Mac"
+  },
+  "ui.call_window.recording_saved": {
+    "fr": "Enregistrement sauvegardé : {name}",
+    "en": "Recording saved: {name}"
+  },
+  "ui.call_window.recording_started_by": {
+    "fr": "Enregistrement Teams en cours, lancé par {name}.",
+    "en": "Recording in Teams, started by {name}."
+  },
   "ui.call_window.ringing_waiting_for_an_answer": {
     "fr": "Ça sonne… en attente de réponse",
     "en": "Ringing… waiting for an answer"
@@ -2882,6 +2930,10 @@
   "ui.call_window.share_screen": {
     "fr": "Partager l’écran",
     "en": "Share screen"
+  },
+  "ui.call_window.show_in_finder": {
+    "fr": "Afficher dans le Finder",
+    "en": "Show in Finder"
   },
   "ui.call_window.show_notifications_again": {
     "fr": "Réafficher les notifications",
@@ -2895,9 +2947,25 @@
     "fr": "Haut-parleur",
     "en": "Speaker"
   },
+  "ui.call_window.starting_the_recording": {
+    "fr": "Démarrage de l’enregistrement Teams…",
+    "en": "Starting the Teams recording…"
+  },
+  "ui.call_window.stop_recording_in_teams": {
+    "fr": "Arrêter l’enregistrement Teams",
+    "en": "Stop recording in Teams"
+  },
+  "ui.call_window.stop_recording_on_this_mac": {
+    "fr": "Arrêter l’enregistrement sur ce Mac",
+    "en": "Stop recording on this Mac"
+  },
   "ui.call_window.stop_sharing": {
     "fr": "Arrêter le partage d’écran",
     "en": "Stop sharing"
+  },
+  "ui.call_window.stopping_the_recording": {
+    "fr": "Arrêt de l’enregistrement Teams…",
+    "en": "Stopping the Teams recording…"
   },
   "ui.call_window.system_default": {
     "fr": "Par défaut du système",
@@ -3567,6 +3635,14 @@
     "fr": "L’accès à la caméra est refusé. Autorisez Oxide dans Réglages Système › Confidentialité.",
     "en": "Camera access is denied. Allow Oxide in System Settings › Privacy & Security."
   },
+  "ui.device_settings_section.change_folder": {
+    "fr": "Modifier…",
+    "en": "Change…"
+  },
+  "ui.device_settings_section.choose_folder": {
+    "fr": "Choisir",
+    "en": "Choose"
+  },
   "ui.device_settings_section.connecting_to_the_calling_service": {
     "fr": "Connexion au canal d’appels…",
     "en": "Connecting to the calling service…"
@@ -3582,6 +3658,10 @@
   "ui.device_settings_section.hear_yourself_5_s": {
     "fr": "S’écouter (5 s)",
     "en": "Hear yourself (5 s)"
+  },
+  "ui.device_settings_section.local_recordings": {
+    "fr": "Enregistrements locaux",
+    "en": "Local recordings"
   },
   "ui.device_settings_section.make_a_test_call": {
     "fr": "Passer un appel de test",
@@ -3614,6 +3694,10 @@
   "ui.device_settings_section.records_5_seconds_then_plays_them": {
     "fr": "Enregistre 5 secondes puis les rejoue sur le haut-parleur choisi",
     "en": "Records 5 seconds, then plays them back on the selected speaker"
+  },
+  "ui.device_settings_section.reset_folder": {
+    "fr": "Par défaut",
+    "en": "Use default"
   },
   "ui.device_settings_section.speaker": {
     "fr": "Haut-parleur",
