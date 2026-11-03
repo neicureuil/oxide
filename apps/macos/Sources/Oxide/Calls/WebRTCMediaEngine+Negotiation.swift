@@ -149,7 +149,8 @@ extension WebRTCMediaEngine {
 
     private func waitForConnection(_ callId: String) {
         connectionTimeout?.cancel()
-        guard connection?.connectionState != .connected else { return }
+        // While reconnecting, `reconnect` owns the deadline.
+        guard connection?.connectionState != .connected, reconnection == nil else { return }
         connectionTimeout = Task { [weak self] in
             try? await Task.sleep(for: .seconds(30))
             guard !Task.isCancelled, let self, self.callId == callId,
@@ -257,6 +258,39 @@ extension WebRTCMediaEngine {
         connection.restartIce()
         renegotiate(callId, reason: "ICE restart")
     }
+
+    /// The connection failed after being up, e.g. a Wi-Fi drop: restart ICE, again after 1 s, 2 s… up to 5 s
+    /// between attempts, and end the call only if nothing comes back within `reconnectTimeLimit`,
+    /// like the web client (`reconnectTimeLimit`, `maxReconnectDelayTime`).
+    func reconnect(_ callId: String) {
+        guard reconnection == nil else { return }
+        callTrace("reconnecting for up to \(reconnectTimeLimit)")
+        reconnecting = true
+        let deadline = ContinuousClock.now + reconnectTimeLimit
+        reconnection = Task { [weak self] in
+            var attempt = 0
+            while ContinuousClock.now < deadline {
+                guard let self, !Task.isCancelled, self.callId == callId, let connection = self.connection else { return }
+                var pause = Duration.milliseconds(500)
+                if Self.attemptSettled(connection) {
+                    attempt += 1
+                    callTrace("reconnect attempt \(attempt)")
+                    self.restartIce(callId: callId)
+                    pause = .seconds(min(attempt, 5))
+                }
+                try? await Task.sleep(until: min(deadline, .now + pause), clock: .continuous)
+            }
+            guard let self, !Task.isCancelled, self.callId == callId else { return }
+            self.diagnostics.failed = true
+            self.fail(callId, L("ui.media_engine.the_audio_video_connection_failed_network"))
+        }
+    }
+
+    /// No offer in flight and ICE no longer checking: the previous attempt, if any, is over without success.
+    private static func attemptSettled(_ connection: LKRTCPeerConnection) -> Bool {
+        connection.signalingState == .stable
+            && connection.connectionState != .connecting && connection.connectionState != .connected
+    }
 }
 
 extension WebRTCMediaEngine: LKRTCPeerConnectionDelegate {
@@ -284,12 +318,18 @@ extension WebRTCMediaEngine: LKRTCPeerConnectionDelegate {
             switch newState {
             case .connected:
                 self.connectionTimeout?.cancel()
+                if self.reconnecting { callTrace("reconnected") }
+                self.reconnection?.cancel()
+                self.reconnection = nil
+                self.reconnecting = false
                 self.diagnostics.connected = true
                 self.pollStatistics(callId)
                 self.pollSpeakers(callId)
                 self.onEvent?(.connected(callId: callId))
             case .disconnected:
                 self.diagnostics.disconnects += 1
+            case .failed where self.diagnostics.connected:
+                self.reconnect(callId)
             case .failed:
                 self.diagnostics.failed = true
                 self.fail(callId, L("ui.media_engine.the_audio_video_connection_failed_network"))
