@@ -60,6 +60,7 @@ struct Composer: View {
                 onPasteImage: pasteImage,
                 onMentionCommand: mentionCommand,
                 onEditLast: editLast,
+                onDropFiles: { store.send(.files(action: .attach(paths: $0))) },
                 takeFocusRequest: store.takeComposerFocusRequest
             )
             .frame(height: min(max(height, 40), 140))
@@ -319,6 +320,7 @@ private struct DraftEditor: NSViewRepresentable {
     let onMentionCommand: (Selector) -> Bool
     /// ↑ with an empty draft; false when there is nothing to edit.
     let onEditLast: () -> Bool
+    let onDropFiles: ([String]) -> Void
     /// Whether a « Répondre » asked for the focus before this editor existed (a thread opening).
     let takeFocusRequest: () -> Bool
 
@@ -340,6 +342,7 @@ private struct DraftEditor: NSViewRepresentable {
         scroll.documentView = text
         input.textView = text
         text.formatShortcut = { [weak input] key in input?.shortcut(key) }
+        text.fileDrop = { [weak coordinator = context.coordinator] paths in coordinator?.parent.onDropFiles(paths) }
         text.sendShortcut = { [weak coordinator = context.coordinator] in
             guard let coordinator else { return }
             if !coordinator.parent.onMentionCommand(#selector(NSResponder.insertNewline(_:))) { coordinator.parent.onSend() }

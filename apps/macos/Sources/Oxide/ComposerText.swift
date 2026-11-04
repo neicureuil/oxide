@@ -145,6 +145,8 @@ final class ComposerTextView: NSTextView {
     var sendShortcut: (() -> Void)?
     /// Receives an image pasted on its own, as PNG with its size in points, before it goes into the text under `id`.
     var imagePaste: ((_ id: String, _ png: Data, _ size: NSSize) -> Void)?
+    /// Receives the paths of files dropped from the Finder, which the text view would otherwise write out as text.
+    var fileDrop: (([String]) -> Void)?
     var preferences = UserDefaults.standard
     var pasteboard = NSPasteboard.general
 
@@ -158,6 +160,17 @@ final class ComposerTextView: NSTextView {
     override func toggleAutomaticSpellingCorrection(_ sender: Any?) {
         super.toggleAutomaticSpellingCorrection(sender)
         preferences.set(isAutomaticSpellingCorrectionEnabled, forKey: Self.automaticSpellingCorrectionKey)
+    }
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let paths = Self.droppedFiles(from: sender.draggingPasteboard)
+        guard let fileDrop, !paths.isEmpty else { return super.performDragOperation(sender) }
+        fileDrop(paths)
+        return true
+    }
+    /// Local file paths on a dragging pasteboard; dragged text and web links carry none.
+    static func droppedFiles(from pasteboard: NSPasteboard) -> [String] {
+        let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]
+        return (urls ?? []).map(\.path)
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command), [36, 76].contains(event.keyCode), !hasMarkedText() {
