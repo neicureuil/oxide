@@ -60,6 +60,16 @@ final class ComposerTests: XCTestCase {
         let plain = NSRect(x: 10, y: 4, width: 1, height: text)
         XCTAssertEqual(ComposerTextView.caret(in: plain, font: ComposerText.baseFont, layout: layout), plain)
     }
+    func testOnlyDroppedFilesAreTakenAsAttachments() {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("oxide.tests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.writeObjects([URL(fileURLWithPath: "/tmp/rapport.pdf") as NSURL])
+        XCTAssertEqual(ComposerTextView.droppedFiles(from: pasteboard), ["/tmp/rapport.pdf"])
+        pasteboard.clearContents()
+        pasteboard.writeObjects([URL(string: "https://example.com/rapport.pdf")! as NSURL, "texte" as NSString])
+        XCTAssertEqual(ComposerTextView.droppedFiles(from: pasteboard), [])
+    }
     func testMentionDetectionAtCaretUsesUTF16AndRejectsEmailAndSelections() {
         let text = "😀 Bonjour @Édou fin"
         let caret = ("😀 Bonjour @Édou" as NSString).length
