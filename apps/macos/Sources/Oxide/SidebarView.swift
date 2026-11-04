@@ -257,22 +257,30 @@ private struct ChatRowView: View, Equatable {
         .help(row.title)
         .id(row.listId)
         .accessibilityAddTraits(row.selected ? .isSelected : [])
-        .contextMenu {
-            Button(row.pinned ? L("ui.chat_admin.unpin") : L("ui.chat_admin.pin")) {
-                store.send(.chatAdmin(action: .setPinned(chatId: row.id, pinned: !row.pinned)))
-            }
-            Button(row.unread ? L("ui.chat_admin.mark_as_read") : L("ui.chat_admin.mark_as_unread")) {
-                store.send(.chatAdmin(action: row.unread ? .markRead(chatId: row.id) : .markUnread(chatId: row.id)))
-            }
-            Button(row.hidden ? L("ui.chat_admin.show") : L("ui.chat_admin.hide")) {
-                store.send(.chatAdmin(action: row.hidden ? .unhide(chatId: row.id) : .hide(chatId: row.id)))
-            }
-            ChatNotificationMenu(id: row.id, muted: row.muted)
-            if row.canLeave {
-                Divider()
-                Button(L("ui.chat_admin.leave"), role: .destructive) { onLeave(row) }
-            }
-        }
+        .contextMenu { ChatActions(row: row, onLeave: onLeave) }
     }
 }
 
+/// What can be done to a chat, from its row in the list and from its header.
+struct ChatActions: View {
+    @Environment(Store.self) private var store
+    let row: ChatRow
+    /// Asks for confirmation before leaving: a menu cannot hold the dialog itself.
+    let onLeave: (ChatRow) -> Void
+    var body: some View {
+        Button(row.pinned ? L("ui.chat_admin.unpin") : L("ui.chat_admin.pin")) {
+            store.send(.chatAdmin(action: .setPinned(chatId: row.id, pinned: !row.pinned)))
+        }
+        Button(row.unread ? L("ui.chat_admin.mark_as_read") : L("ui.chat_admin.mark_as_unread")) {
+            store.send(.chatAdmin(action: row.unread ? .markRead(chatId: row.id) : .markUnread(chatId: row.id)))
+        }
+        Button(row.hidden ? L("ui.chat_admin.show") : L("ui.chat_admin.hide")) {
+            store.send(.chatAdmin(action: row.hidden ? .unhide(chatId: row.id) : .hide(chatId: row.id)))
+        }
+        ChatNotificationMenu(id: row.id, muted: row.muted)
+        if row.canLeave {
+            Divider()
+            Button(L("ui.chat_admin.leave"), role: .destructive) { onLeave(row) }
+        }
+    }
+}
