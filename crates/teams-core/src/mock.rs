@@ -93,6 +93,14 @@ fn router(db: Db) -> Router {
         )
         .route("/searchservice/api/v2/query", post(search))
         .route("/v1/objects/demo-image/views/imgo", get(demo_image))
+        .route(
+            "/v1/objects/",
+            post(|| async { (StatusCode::CREATED, Json(json!({"id": "demo-pasted"}))) }),
+        )
+        .route(
+            "/v1/objects/{id}/content/imgpsh",
+            put(|| async { StatusCode::CREATED }),
+        )
         .route("/v1/url/info", get(url_info))
         .route("/v1/threads", post(create_chat))
         .route(

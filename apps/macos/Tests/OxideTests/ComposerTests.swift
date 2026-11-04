@@ -4,6 +4,62 @@ import OxideCore
 @testable import Oxide
 
 final class ComposerTests: XCTestCase {
+    func testAnImageAloneIsPastedAsAnImageAndTextWithPicturesAsText() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("oxide.tests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let png = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8,
+            samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)?
+            .representation(using: .png, properties: [:]))
+        pasteboard.declareTypes([.png], owner: nil)
+        pasteboard.setData(png, forType: .png)
+        XCTAssertEqual(ComposerTextView.pastedImage(from: pasteboard), png)
+        pasteboard.declareTypes([.png, .string], owner: nil)
+        pasteboard.setData(png, forType: .png)
+        pasteboard.setString("Légende", forType: .string)
+        XCTAssertNil(ComposerTextView.pastedImage(from: pasteboard))
+    }
+    func testPasteIsOfferedForAnImageAndHandsItOver() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("oxide.tests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let image = NSImage(size: NSSize(width: 4, height: 3), flipped: false) { rect in
+            NSColor.red.setFill()
+            rect.fill()
+            return true
+        }
+        let png = try XCTUnwrap(NSBitmapImageRep(data: XCTUnwrap(image.tiffRepresentation))?.representation(using: .png, properties: [:]))
+        pasteboard.declareTypes([.png], owner: nil)
+        pasteboard.setData(png, forType: .png)
+        let text = ComposerTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 40))
+        text.importsGraphics = false
+        text.pasteboard = pasteboard
+        var pasted: (id: String, png: Data)?
+        text.imagePaste = { id, png, _ in pasted = (id, png) }
+        let item = NSMenuItem(title: "", action: #selector(NSText.paste(_:)), keyEquivalent: "")
+        XCTAssertTrue(text.validateUserInterfaceItem(item))
+        text.paste(nil)
+        XCTAssertEqual(pasted?.png, png)
+        let placed = text.textStorage?.attribute(.attachment, at: 0, effectiveRange: nil) as? PastedImageAttachment
+        XCTAssertEqual(placed?.id, pasted?.id)
+    }
+    func testAPastedImageKeepsItsIdThroughTheDraftFormatsAndShowsAtMost240By120() {
+        PastedImageAttachment.images["img"] = NSImage(size: NSSize(width: 800, height: 200))
+        let image = ComposerFormat(start: 2, length: 1, bold: false, italic: false, underline: false, strike: false, code: false, color: nil, highlight: nil, size: 14, link: nil, block: .paragraph, indent: 0, alignment: "left", image: "img")
+        let text = NSTextView()
+        text.textStorage?.setAttributedString(ComposerText.attributed("a \u{FFFC} b", formats: [image]))
+        let attachment = text.textStorage?.attribute(.attachment, at: 2, effectiveRange: nil) as? PastedImageAttachment
+        XCTAssertEqual(attachment?.bounds.size, CGSize(width: 240, height: 60))
+        let runs = ComposerText.formats(text)
+        XCTAssertEqual(runs.filter { $0.image != nil }.map { [$0.start, $0.length] }, [[2, 1]])
+        XCTAssertEqual(runs.first { $0.image != nil }?.image, "img")
+    }
+    func testTheCaretBesideAnImageKeepsToTheTextHeightAtTheBottomOfTheLine() {
+        let layout = NSLayoutManager()
+        let text = layout.defaultLineHeight(for: ComposerText.baseFont)
+        let caret = ComposerTextView.caret(in: NSRect(x: 10, y: 4, width: 1, height: 120), font: ComposerText.baseFont, layout: layout)
+        XCTAssertEqual(caret, NSRect(x: 10, y: 124 - text, width: 1, height: text))
+        let plain = NSRect(x: 10, y: 4, width: 1, height: text)
+        XCTAssertEqual(ComposerTextView.caret(in: plain, font: ComposerText.baseFont, layout: layout), plain)
+    }
     func testMentionDetectionAtCaretUsesUTF16AndRejectsEmailAndSelections() {
         let text = "😀 Bonjour @Édou fin"
         let caret = ("😀 Bonjour @Édou" as NSString).length
@@ -34,7 +90,7 @@ final class ComposerTests: XCTestCase {
 extension ComposerTests {
     func testRichTextRoundTripAndFormattingRetainsUTF16Ranges() {
         let original = "😀 Bonjour lien"
-        let format = ComposerFormat(start: 3, length: 7, bold: true, italic: true, underline: true, strike: true, code: false, color: "#c4314b", highlight: "#fff100", size: 18, link: nil, block: .paragraph, indent: 0, alignment: "left")
+        let format = ComposerFormat(start: 3, length: 7, bold: true, italic: true, underline: true, strike: true, code: false, color: "#c4314b", highlight: "#fff100", size: 18, link: nil, block: .paragraph, indent: 0, alignment: "left", image: nil)
         let text = NSTextView()
         text.textStorage?.setAttributedString(ComposerText.attributed(original, formats: [format]))
         let runs = ComposerText.formats(text)

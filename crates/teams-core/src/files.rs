@@ -52,6 +52,15 @@ pub enum FileAction {
     Attach {
         paths: Vec<String>,
     },
+    /// An image pasted in the composer, as PNG: it goes inline in the message, as in Teams, not to OneDrive.
+    /// `id` is the one its placeholder in the draft carries (`ComposerFormat::image`); `width` and `height` are
+    /// its size on screen, in points.
+    PasteImage {
+        id: String,
+        png: Vec<u8>,
+        width: u32,
+        height: u32,
+    },
     RemoveAttachment {
         id: String,
     },
@@ -107,6 +116,8 @@ pub struct PendingFileView {
     pub progress: u8,
     pub ready: bool,
     pub error: Option<String>,
+    /// A pasted image: the draft shows it in the text, not as an attachment.
+    pub inline: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Record)]
 pub struct EntryView {
@@ -145,7 +156,7 @@ pub(crate) enum FilesMsg {
     Site(u64, Result<(PersonalSite, String), String>),
     /// Upload progress of a draft attachment.
     Progress(String, u8),
-    Uploaded(u64, String, Result<UploadedFile, String>),
+    Uploaded(u64, String, Result<Uploaded, String>),
     /// Download progress, by file key.
     Transfer(String, u8),
     Downloaded(u64, String, bool, Result<PathBuf, String>),
@@ -155,16 +166,51 @@ pub(crate) enum FilesMsg {
     Changed(u64, u64, Result<(), String>),
 }
 
+/// Where a draft attachment went.
+#[derive(Debug, Clone)]
+pub(crate) enum Uploaded {
+    /// To OneDrive or the channel's folder, sent as a file reference.
+    File(UploadedFile),
+    /// To AMS, shown in the message body.
+    Image(InlineImage),
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InlineImage {
+    pub url: String,
+    pub width: u32,
+    pub height: u32,
+}
+impl InlineImage {
+    /// The `<img>` the web client writes for a pasted image.
+    pub(crate) fn tag(&self) -> String {
+        format!(
+            "<img src=\"{}\" width=\"{}\" height=\"{}\" alt=\"image\" itemscope=\"\" itemtype=\"http://schema.skype.com/AMSImage\">",
+            escape_attr(&self.url),
+            self.width,
+            self.height
+        )
+    }
+}
 enum PendingState {
     /// Waiting for the OneDrive site to be known.
     Waiting,
     Uploading(u8),
-    Ready(UploadedFile),
+    Ready(Uploaded),
     Failed(String),
+}
+enum Upload {
+    /// A local file, uploaded to OneDrive or the channel's folder.
+    File(PathBuf),
+    /// A pasted image and its size in points, put on AMS to show inline.
+    Image {
+        png: Arc<Vec<u8>>,
+        width: u32,
+        height: u32,
+    },
 }
 struct Pending {
     id: String,
-    path: PathBuf,
+    source: Upload,
     name: String,
     state: PendingState,
     cancel: Arc<AtomicBool>,
@@ -395,7 +441,7 @@ impl App {
                 }
                 // Removed meanwhile: do not leave the upload behind in OneDrive.
                 match (result, self.files_client()) {
-                    (Ok(file), Some(client)) => recycle(client, file),
+                    (Ok(Uploaded::File(file)), Some(client)) => recycle(client, file),
                     _ => Task::none(),
                 }
             }
@@ -550,7 +596,7 @@ impl App {
                         .push(Pending {
                             id: id.clone(),
                             name: local_name(&path),
-                            path,
+                            source: Upload::File(path),
                             state: PendingState::Waiting,
                             cancel: Arc::default(),
                             selection: selection.clone(),
@@ -558,6 +604,40 @@ impl App {
                     tasks.push(self.start_upload(&id));
                 }
                 Task::batch(tasks)
+            }
+            FileAction::PasteImage {
+                id,
+                png,
+                width,
+                height,
+            } => {
+                let Some(selection) = self.selected.clone() else {
+                    return Task::none();
+                };
+                if self.read_only() {
+                    return Task::none();
+                }
+                if self.pending_mut(&id).is_some() {
+                    return Task::none();
+                }
+                let key = self.draft_key();
+                self.files
+                    .attachments
+                    .entry(key)
+                    .or_default()
+                    .push(Pending {
+                        id: id.clone(),
+                        name: "image.png".into(),
+                        source: Upload::Image {
+                            png: Arc::new(png),
+                            width,
+                            height,
+                        },
+                        state: PendingState::Waiting,
+                        cancel: Arc::default(),
+                        selection,
+                    });
+                self.start_upload(&id)
             }
             FileAction::RemoveAttachment { id } => {
                 let mut removed = None;
@@ -571,7 +651,9 @@ impl App {
                 };
                 pending.cancel.store(true, Ordering::Relaxed);
                 match (pending.state, self.files_client()) {
-                    (PendingState::Ready(file), Some(client)) => recycle(client, file),
+                    (PendingState::Ready(Uploaded::File(file)), Some(client)) => {
+                        recycle(client, file)
+                    }
                     _ => Task::none(),
                 }
             }
@@ -791,6 +873,12 @@ impl App {
     // ---- Attachments -----------------------------------------------------
 
     fn start_upload(&mut self, id: &str) -> Task<Msg> {
+        if self
+            .pending_mut(id)
+            .is_some_and(|p| matches!(p.source, Upload::Image { .. }))
+        {
+            return self.start_image_upload(id);
+        }
         let Some(client) = self.files_client() else {
             return Task::none();
         };
@@ -844,9 +932,12 @@ impl App {
         let Some(p) = self.pending_mut(id) else {
             return Task::none();
         };
+        let Upload::File(path) = &p.source else {
+            return Task::none();
+        };
+        let path = path.clone();
         p.state = PendingState::Uploading(0);
-        let (path, name, cancel, id) = (
-            p.path.clone(),
+        let (name, cancel, id) = (
             p.name.clone(),
             p.cancel.clone(),
             p.id.clone(),
@@ -865,9 +956,40 @@ impl App {
             let result = client
                 .upload(&destination, &path, &name, &progress, &cancel)
                 .await
+                .map(Uploaded::File)
                 .map_err(|e| e.to_string());
             sink.send(Msg::Files(FilesMsg::Uploaded(g, id, result)));
         })
+    }
+
+    fn start_image_upload(&mut self, id: &str) -> Task<Msg> {
+        let Some(client) = self.client.clone() else {
+            return Task::none();
+        };
+        let Some(p) = self.pending_mut(id) else {
+            return Task::none();
+        };
+        let Upload::Image {
+            png, width, height, ..
+        } = &p.source
+        else {
+            return Task::none();
+        };
+        let (png, width, height) = (png.clone(), *width, *height);
+        p.state = PendingState::Uploading(0);
+        let (name, id) = (p.name.clone(), p.id.clone());
+        let conversation = p.selection.id().to_owned();
+        let g = self.generation;
+        Task::perform(
+            async move {
+                let url = client
+                    .upload_image(&conversation, &name, png.to_vec())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(Uploaded::Image(InlineImage { url, width, height }))
+            },
+            move |result| Msg::Files(FilesMsg::Uploaded(g, id, result)),
+        )
     }
 
     /// Site and folder of a channel's files, from the team and channel the CSA returned.
@@ -886,12 +1008,15 @@ impl App {
         }
     }
 
+    /// Pasted images deleted from the text are left out, but kept until sending in case of an undo.
     pub(crate) fn pending_views(&self) -> Vec<PendingFileView> {
+        let placed = self.draft_image_ids();
         self.files
             .attachments
             .get(&self.draft_key())
             .into_iter()
             .flatten()
+            .filter(|p| !matches!(p.source, Upload::Image { .. }) || placed.contains(&p.id))
             .map(|p| {
                 let (progress, ready, error) = match &p.state {
                     PendingState::Waiting => (0, false, None),
@@ -906,13 +1031,14 @@ impl App {
                     progress,
                     ready,
                     error,
+                    inline: matches!(p.source, Upload::Image { .. }),
                 }
             })
             .collect()
     }
 
     /// Attachments of the current draft that are ready, or why sending must wait.
-    pub(crate) fn ready_attachments(&self) -> Result<Vec<(String, UploadedFile)>, String> {
+    pub(crate) fn ready_attachments(&self) -> Result<Vec<(String, Uploaded)>, String> {
         let mut ready = vec![];
         for p in self
             .files
@@ -932,6 +1058,25 @@ impl App {
             }
         }
         Ok(ready)
+    }
+    /// Forgets the pasted images no longer in the draft's text: they do not go out with it.
+    pub(crate) fn drop_unplaced_images(&mut self) {
+        let placed = self.draft_image_ids();
+        let key = self.draft_key();
+        if let Some(list) = self.files.attachments.get_mut(&key) {
+            list.retain(|p| !matches!(p.source, Upload::Image { .. }) || placed.contains(&p.id));
+        }
+    }
+    /// A pasted image of the draft, once on AMS.
+    pub(crate) fn inline_image(&self, id: &str) -> Option<&InlineImage> {
+        self.files
+            .attachments
+            .get(&self.draft_key())?
+            .iter()
+            .find_map(|p| match &p.state {
+                PendingState::Ready(Uploaded::Image(image)) if p.id == id => Some(image),
+                _ => None,
+            })
     }
     pub(crate) fn has_attachments(&self) -> bool {
         self.files
@@ -1634,6 +1779,63 @@ mod tests {
         assert!(view.entries.iter().any(|e| e.name == "Plan produit.txt"));
     }
 
+    #[tokio::test]
+    async fn a_pasted_image_goes_where_it_is_in_the_text_and_a_deleted_one_stays_out() {
+        let (app, task) = App::boot(true);
+        let (tx, rx) = unbounded_channel();
+        let mut h = Harness {
+            app,
+            tx,
+            rx,
+            effects: vec![],
+        };
+        h.run(task);
+        h.until("workspace", |a| !a.chats.is_empty()).await;
+        h.send(Msg::Select(Selection::Chat("19:projet-rust@thread.v2".into())));
+        h.until("feed", |a| !a.conv.messages().is_empty()).await;
+        for id in ["kept", "deleted"] {
+            h.file(FileAction::PasteImage {
+                id: id.into(),
+                png: b"png bytes".to_vec(),
+                width: 320,
+                height: 200,
+            });
+        }
+        let image = |start, id: &str| crate::ComposerFormat {
+            start,
+            length: 1,
+            image: Some(id.into()),
+            ..Default::default()
+        };
+        // An image format on anything but its placeholder is dropped.
+        h.send(Msg::RichDraftChanged(
+            "voici \u{FFFC} fin".into(),
+            vec![image(6, "kept"), image(8, "deleted")],
+        ));
+        h.until("upload", |a| {
+            a.pending_views()
+                .iter()
+                .all(|p| p.ready || p.error.is_some())
+        })
+        .await;
+        let pending = h.app.pending_views();
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert!(pending[0].ready && pending[0].inline, "{pending:?}");
+        h.send(Msg::Send);
+        h.until("sent", |a| !a.conv.sending() && a.pending_views().is_empty())
+            .await;
+        assert_eq!(h.app.error, None);
+        assert!(h.app.files.attachments.is_empty());
+        h.until("feed with the image", |a| {
+            a.conv.messages().iter().any(|m| {
+                m.content.matches("http://schema.skype.com/AMSImage").count() == 1
+                    && m.content.contains("<p>voici <img src=")
+                    && m.content.contains("/v1/objects/demo-pasted/views/imgo\" width=\"320\"")
+                    && m.content.contains("> fin</p>")
+            })
+        })
+        .await;
+    }
     #[tokio::test]
     async fn demo_attach_send_download_share_and_browse() {
         let (app, task) = App::boot(true);

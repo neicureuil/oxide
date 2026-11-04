@@ -57,6 +57,7 @@ struct Composer: View {
                 height: $height,
                 onChange: { store.send(.richDraftChanged(value: $0, formats: $1)) },
                 onSend: { store.send(.send) },
+                onPasteImage: pasteImage,
                 onMentionCommand: mentionCommand,
                 onEditLast: editLast,
                 takeFocusRequest: store.takeComposerFocusRequest
@@ -66,7 +67,9 @@ struct Composer: View {
                 LinkPreviewCard(preview: link) { store.send(.linkPreview(action: .dismiss)) }
             }
             if !composer.cards.isEmpty { ComposerCards(cards: composer.cards) }
-            if !composer.attachments.isEmpty { AttachmentChips(attachments: composer.attachments) }
+            // Pasted images show in the text; a failed upload needs its chip to say so.
+            let chips = composer.attachments.filter { !$0.inline || $0.error != nil }
+            if !chips.isEmpty { AttachmentChips(attachments: chips) }
             tools
         }
         .onDrop(of: [.fileURL], isTargeted: $dropping) { providers in
@@ -186,6 +189,11 @@ struct Composer: View {
         } else {
             Color.clear.frame(width: 0, height: 0)
         }
+    }
+    /// Sends a pasted image with its size in points, so a Retina screenshot shows at the size it had on screen.
+    private func pasteImage(id: String, png: Data, size: NSSize) {
+        store.send(.files(action: .pasteImage(id: id, png: png, width: UInt32(max(size.width.rounded(), 1)),
+                                              height: UInt32(max(size.height.rounded(), 1)))))
     }
     /// ↑ in an empty composer edits my latest message of the feed it writes to.
     private func editLast() -> Bool {
@@ -307,6 +315,7 @@ private struct DraftEditor: NSViewRepresentable {
     @Binding var height: CGFloat
     let onChange: (String, [ComposerFormat]) -> Void
     let onSend: () -> Void
+    let onPasteImage: (String, Data, NSSize) -> Void
     let onMentionCommand: (Selector) -> Bool
     /// ↑ with an empty draft; false when there is nothing to edit.
     let onEditLast: () -> Bool
@@ -335,6 +344,7 @@ private struct DraftEditor: NSViewRepresentable {
             guard let coordinator else { return }
             if !coordinator.parent.onMentionCommand(#selector(NSResponder.insertNewline(_:))) { coordinator.parent.onSend() }
         }
+        text.imagePaste = { [weak coordinator = context.coordinator] id, png, size in coordinator?.parent.onPasteImage(id, png, size) }
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true

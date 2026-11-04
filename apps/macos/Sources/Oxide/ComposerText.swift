@@ -40,7 +40,8 @@ enum ComposerText {
             size: font.pointSize == 14 ? 0 : UInt32(min(max(font.pointSize, 10), 36)),
             link: (attrs[.link] as? URL)?.absoluteString ?? attrs[.link] as? String,
             block: block(attrs), indent: UInt32((attrs[.composerIndent] as? NSNumber)?.intValue ?? 0),
-            alignment: paragraph?.alignment == .center ? "center" : paragraph?.alignment == .right ? "right" : "left")
+            alignment: paragraph?.alignment == .center ? "center" : paragraph?.alignment == .right ? "right" : "left",
+            image: (attrs[.attachment] as? PastedImageAttachment)?.id)
     }
     static func formats(_ text: NSTextView) -> [ComposerFormat] {
         guard let storage = text.textStorage else { return [] }
@@ -62,6 +63,9 @@ enum ComposerText {
         if let color = color(style.color) { attrs[.foregroundColor] = color }
         if let color = color(style.highlight) { attrs[.backgroundColor] = color }
         if let link = style.link { attrs[.link] = link }
+        if let id = style.image, let image = PastedImageAttachment.images[id] {
+            attrs[.attachment] = PastedImageAttachment(id: id, image: image)
+        }
         attrs[.composerCode] = style.code
         attrs[.composerBlock] = blocks.firstIndex(of: style.block) ?? 0
         attrs[.composerIndent] = style.indent
@@ -82,6 +86,23 @@ enum ComposerText {
         }
         return result
     }
+}
+
+/// A pasted image in the draft, shown at most 240 by 120 points; `id` is what the core knows its upload by.
+final class PastedImageAttachment: NSTextAttachment {
+    let id: String
+    /// Pasted images by id, to show them again when the draft is rebuilt, e.g. back from another conversation.
+    static var images: [String: NSImage] = [:]
+
+    init(id: String, image: NSImage) {
+        self.id = id
+        super.init(data: nil, ofType: nil)
+        self.image = image
+        let size = image.size
+        let scale = min(1, 240 / max(size.width, 1), 120 / max(size.height, 1))
+        bounds = CGRect(x: 0, y: 0, width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
+    }
+    required init?(coder: NSCoder) { nil }
 }
 
 /// List markers are drawn separately: the draft retains clean text and mention offsets.
@@ -122,7 +143,10 @@ final class ComposerTextView: NSTextView {
 
     var formatShortcut: ((String) -> Void)?
     var sendShortcut: (() -> Void)?
+    /// Receives an image pasted on its own, as PNG with its size in points, before it goes into the text under `id`.
+    var imagePaste: ((_ id: String, _ png: Data, _ size: NSSize) -> Void)?
     var preferences = UserDefaults.standard
+    var pasteboard = NSPasteboard.general
 
     /// Applies the choice last made from the Spelling menu: each conversation gets a new composer, which would
     /// otherwise follow the system setting.
@@ -146,6 +170,48 @@ final class ComposerTextView: NSTextView {
         }
         return super.performKeyEquivalent(with: event)
     }
+    /// The caret spans its line, as tall as an image on it: it keeps to the text's height, at the bottom of the line.
+    override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
+        super.drawInsertionPoint(in: Self.caret(in: rect, font: typingAttributes[.font] as? NSFont ?? ComposerText.baseFont,
+                                                layout: layoutManager), color: color, turnedOn: flag)
+    }
+    static func caret(in rect: NSRect, font: NSFont, layout: NSLayoutManager?) -> NSRect {
+        let height = min(rect.height, layout?.defaultLineHeight(for: font) ?? rect.height)
+        return NSRect(x: rect.minX, y: rect.maxY - height, width: rect.width, height: height)
+    }
+    override func paste(_ sender: Any?) {
+        if let imagePaste, let png = Self.pastedImage(from: pasteboard), let image = NSImage(data: png) {
+            let id = UUID().uuidString
+            PastedImageAttachment.images[id] = image
+            imagePaste(id, png, image.size)
+            insertText(NSAttributedString(attachment: PastedImageAttachment(id: id, image: image)), replacementRange: selectedRange())
+            return
+        }
+        super.paste(sender)
+    }
+
+    /// The text view greys out Paste for content it cannot read, and it reads no images (`importsGraphics` is off).
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(paste(_:)), imagePaste != nil, Self.holdsImageAlone(pasteboard) { return true }
+        return super.validateUserInterfaceItem(item)
+    }
+
+    /// An image (a screenshot, a copied picture) with no text or file to paste instead: text copied from a document,
+    /// which may carry its pictures too, still pastes as text.
+    static func holdsImageAlone(_ pasteboard: NSPasteboard) -> Bool {
+        let types = pasteboard.types ?? []
+        return !types.contains(.string) && !types.contains(.fileURL) && NSImage.canInit(with: pasteboard)
+    }
+
+    /// The PNG of an image pasted on its own, see `holdsImageAlone`.
+    static func pastedImage(from pasteboard: NSPasteboard) -> Data? {
+        guard holdsImageAlone(pasteboard) else { return nil }
+        if let png = pasteboard.data(forType: .png) { return png }
+        guard let image = NSImage(pasteboard: pasteboard), let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
+        return bitmap.representation(using: .png, properties: [:])
+    }
+
     override func resetCursorRects() {
         super.resetCursorRects()
         addCursorRect(bounds, cursor: .iBeam)
