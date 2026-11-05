@@ -364,8 +364,7 @@ private struct DraftEditor: NSViewRepresentable {
         text.textContainer?.lineFragmentPadding = 2
         text.font = ComposerText.baseFont
         text.textColor = .labelColor
-        text.textStorage?.setAttributedString(ComposerText.attributed(draft, formats: formats))
-        text.setSelectedRange(NSRange(location: (draft as NSString).length, length: 0))
+        text.showDraft(draft, formats: formats, cursor: (draft as NSString).length)
         text.setAccessibilityLabel(placeholder)
         DispatchQueue.main.async { self.input.capture(draft, selection: NSRange(location: (draft as NSString).length, length: 0), mentions: mentions, coreChange: true) }
         context.coordinator.revision = revision
@@ -379,15 +378,14 @@ private struct DraftEditor: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         let coordinator = context.coordinator
         coordinator.parent = self
-        guard let text = scroll.documentView as? NSTextView else { return }
+        guard let text = scroll.documentView as? ComposerTextView else { return }
         coordinator.placeholder?.stringValue = placeholder
         // Only replace the text when the core changed it (selection, sent, emoji…).
         if coordinator.revision != revision {
             coordinator.revision = revision
             coordinator.applyingCore = true
             coordinator.colored = nil // Replacing the text drops its mention colors.
-            text.textStorage?.setAttributedString(ComposerText.attributed(draft, formats: formats))
-            text.setSelectedRange(NSRange(location: min(cursor, (draft as NSString).length), length: 0))
+            text.showDraft(draft, formats: formats, cursor: cursor)
             coordinator.applyingCore = false
             let selected = text.selectedRange()
             let value = text.string

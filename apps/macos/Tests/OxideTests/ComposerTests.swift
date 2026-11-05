@@ -139,6 +139,44 @@ extension ComposerTests {
         input.toggle(.code)
         XCTAssertTrue(ComposerText.formats(text).contains { $0.code })
     }
+    func testTheLineBelowAReplyQuoteTypesWithoutItsIndent() {
+        let text = ComposerTextView()
+        text.showDraft("Alice\n", formats: replyFormats, cursor: 6)
+        XCTAssertEqual(ComposerText.block(text.typingAttributes), .paragraph)
+        XCTAssertEqual((text.typingAttributes[.paragraphStyle] as? NSParagraphStyle)?.headIndent, 0)
+    }
+    func testAnEmptiedDraftTypesPlainTextAfterAQuote() {
+        let text = ComposerTextView()
+        text.showDraft("Alice", formats: [replyFormats[0]], cursor: 5)
+        XCTAssertEqual(ComposerText.block(text.typingAttributes), .quote)
+        text.showDraft("", formats: [], cursor: 0)
+        XCTAssertEqual(ComposerText.block(text.typingAttributes), .paragraph)
+        XCTAssertEqual((text.typingAttributes[.paragraphStyle] as? NSParagraphStyle)?.headIndent, 0)
+    }
+    private var replyFormats: [ComposerFormat] {
+        var quote = ComposerText.empty
+        quote.length = 5
+        quote.block = .quote
+        var plain = ComposerText.empty
+        plain.start = 5
+        plain.length = 1
+        return [quote, plain]
+    }
+    func testTypingTakesTheRunAtTheCaretWithoutItsLinkOrImage() {
+        var heading = ComposerText.empty
+        heading.length = 2
+        heading.block = .heading1
+        heading.link = "https://example.test"
+        XCTAssertEqual(ComposerText.typing([heading], at: 0).block, .heading1)
+        XCTAssertEqual(ComposerText.typing(replyFormats, at: 5).block, .quote)
+        XCTAssertNil(ComposerText.typing([heading], at: 2).link)
+        var image = ComposerText.empty
+        image.length = 1
+        image.bold = true
+        image.image = "img"
+        XCTAssertTrue(ComposerText.typing([image], at: 1).bold)
+        XCTAssertNil(ComposerText.typing([image], at: 1).image)
+    }
     func testTypingStyleWorksInEmptyEditorAndClears() {
         let text = NSTextView()
         text.typingAttributes = ComposerText.base
