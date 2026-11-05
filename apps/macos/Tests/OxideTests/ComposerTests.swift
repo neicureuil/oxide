@@ -95,6 +95,14 @@ final class ComposerTests: XCTestCase {
         input.capture("@Alice @bo", selection: NSRange(location: 10, length: 0), mentions: [MentionRange(start: 0, length: 6)])
         XCTAssertEqual(input.mention?.query, "bo")
     }
+    @MainActor func testAReplyQuotesItsLineThenBreaksItWherePlainTextFollows() {
+        var quote = ComposerText.empty
+        quote.block = .quote
+        XCTAssertEqual(Store.replyEdits(quoting: "Bob 😀: ok"), [
+            .replaceDraft(start: 0, length: 0, text: "Bob 😀: ok", mention: nil, emoji: nil, style: quote),
+            .replaceDraft(start: 10, length: 0, text: "\n", mention: nil, emoji: nil, style: ComposerText.empty),
+        ])
+    }
 }
 
 extension ComposerTests {
