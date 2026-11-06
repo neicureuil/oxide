@@ -359,14 +359,15 @@ struct FeedTable: NSViewRepresentable {
             }
         }
 
-        /// A sideways scroll view inside a row (a code block) would otherwise swallow vertical scrolling while under the pointer.
-        /// Each gesture is routed as a whole, from the direction it starts in.
+        /// A sideways scroll view inside a row (a code block) would otherwise swallow vertical scrolling while under the pointer;
+        /// one that scrolls vertically and has more content than height keeps it. Each gesture is routed as a whole, from the direction it starts in.
         private func routeWheel(_ event: NSEvent, to scroll: NSScrollView) -> Bool {
             guard event.window === scroll.window else { return false }
             if event.phase.contains(.began) || (event.phase.isEmpty && event.momentumPhase.isEmpty) {
                 let hit = scroll.window?.contentView?.hitTest(event.locationInWindow)
-                let inRow = hit?.enclosingScrollView.map { $0 !== scroll && $0.isDescendant(of: scroll) } ?? false
-                wheelToFeed = inRow && abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX)
+                let inner = hit?.enclosingScrollView.flatMap { $0 !== scroll && $0.isDescendant(of: scroll) ? $0 : nil }
+                let innerScrollsDown = inner.map { $0.hasVerticalScroller && ($0.documentView?.frame.height ?? 0) > $0.contentView.bounds.height } ?? false
+                wheelToFeed = inner != nil && !innerScrollsDown && abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX)
             }
             guard wheelToFeed else { return false }
             scroll.scrollWheel(with: event)
