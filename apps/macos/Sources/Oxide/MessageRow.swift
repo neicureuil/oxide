@@ -261,7 +261,7 @@ struct MessageRow: View {
     }
 
     private var editor: some View {
-        MessageEditor(text: store.composer?.editText ?? "")
+        MessageEditor(id: message.id)
     }
 
     @ViewBuilder private var reactionBar: some View {
@@ -289,34 +289,93 @@ struct MessageRow: View {
     }
 }
 
-/// Multi-line message editor, focused on open: Return saves, Option-Return breaks the line, Escape cancels.
+/// My message in the composer's rich editor, inside its bubble: Return saves, Shift-Return breaks the line, Escape cancels.
 private struct MessageEditor: View {
     @Environment(Store.self) private var store
-    let text: String
-    @FocusState private var focused: Bool
+    let id: String
+    @State private var input = DraftInput()
+    @State private var height: CGFloat = 0
+    @State private var formatting = false
+    @State private var toolbarHeight: CGFloat = 0
+    private static let spacing: CGFloat = 8
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SyncedTextField(
-                placeholder: L("ui.message_row.edit_message"),
-                value: text,
-                axis: .vertical,
-                onChange: { store.send(.editChanged(value: $0)) },
-                onSubmit: { store.send(.saveEdit) }
-            )
-            .textFieldStyle(.roundedBorder)
-            // A fixed height: the feed measures the row once, and longer text scrolls.
-            .lineLimit(5, reservesSpace: true)
-            .focused($focused)
-            .frame(minWidth: 280)
+        let draft = RichDraft(store: store, input: input)
+        let composer = draft.composer
+        VStack(alignment: .leading, spacing: Self.spacing) {
+            if formatting {
+                FormattingToolbar(input: input).onGeometryChange(for: CGFloat.self) { $0.size.height } action: { toolbarHeight = $0 }
+            }
+            DraftHeight(draft: composer.draft, formats: composer.draftFormats) {
+                RichDraftEditor(
+                    placeholder: L("ui.message_row.edit_message"),
+                    input: input,
+                    formatting: $formatting,
+                    height: $height,
+                    onSend: { store.send(.saveEdit) },
+                    onCommand: { selector in
+                        guard selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+                        store.send(.cancelEdit)
+                        return true
+                    },
+                    takeFocusRequest: { true }
+                )
+                .modifier(FloatingMentionPicker(input: input))
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderStrong))
+            // Pasted images show in the text; a failed upload needs its chip to say so.
+            if !failed.isEmpty {
+                AttachmentChips(attachments: failed)
+            }
             HStack(spacing: 8) {
+                HStack(spacing: 2) {
+                    FormattingToggle(formatting: $formatting)
+                    EmojiButton(draft: draft)
+                    MentionButton(draft: draft)
+                }
                 Button(L("ui.message_row.save")) { store.send(.saveEdit) }.buttonStyle(PrimaryButtonStyle())
                 Button(L("ui.message_row.cancel")) { store.send(.cancelEdit) }
                     .buttonStyle(OutlineButtonStyle())
                     .keyboardShortcut(.cancelAction)
-                Muted(L("ui.message_row.enter_to_save_enter_for_a"), size: 11)
+                Muted(formatting ? L("ui.message_row.enter_to_save") : L("ui.message_row.enter_to_save_enter_for_a"), size: 11)
             }
         }
-        .onAppear { focused = true }
+        // The feed sizes rows once, with an off-screen copy that has no window and none of this view's state:
+        // a taller text, the formatting tools or a failed upload ask for the row again.
+        .onChange(of: height) { resize() }
+        .onChange(of: extra) { resize() }
+        .onChange(of: failed) { resize() }
+        .onDisappear { if extra > 0 { NotificationCenter.default.post(name: .feedRowResized, object: FeedRowResize(id: id, extra: 0)) } }
+    }
+    private var failed: [PendingFileView] {
+        (store.composer ?? .empty).attachments.filter { $0.error != nil }
+    }
+    /// What the off-screen copy cannot measure; it does see the store, so the failed uploads' chips are in its height.
+    private var extra: CGFloat {
+        formatting ? toolbarHeight + Self.spacing : 0
+    }
+    private func resize() {
+        guard input.textView?.window != nil else { return }
+        NotificationCenter.default.post(name: .feedRowResized, object: FeedRowResize(id: id, extra: extra))
+    }
+}
+
+/// The editor at its text's height for the width offered, computed rather than read from the view so the feed's off-screen measure agrees.
+private struct DraftHeight: Layout {
+    let draft: String
+    let formats: [ComposerFormat]
+    static let maxHeight: CGFloat = 400
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? 520
+        let text = ComposerText.height(draft, formats: formats, width: width)
+        return CGSize(width: width, height: min(max(text, 40), Self.maxHeight))
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for view in subviews { view.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size)) }
     }
 }
 

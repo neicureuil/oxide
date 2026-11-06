@@ -8,7 +8,7 @@ extension ComposerView {
         ComposerView(
             sending: false, draft: "", draftRev: 0, draftCursor: 0,
             mentionRanges: [], draftFormats: [], mentionLoading: false, mentionError: nil,
-            subject: "", importance: .standard, editText: "", attachments: [], cards: [], linkPreview: nil
+            subject: "", importance: .standard, attachments: [], cards: [], linkPreview: nil
         )
     }
 }
@@ -64,6 +64,8 @@ struct RichDraftEditor: View {
     @Binding var formatting: Bool
     @Binding var height: CGFloat
     let onSend: () -> Void
+    /// Keys the editor did not use for a mention.
+    var onCommand: (Selector) -> Bool = { _ in false }
     var onEditLast: () -> Bool = { false }
     var onDropFiles: ([String]) -> Void = { _ in }
     let takeFocusRequest: () -> Bool
@@ -84,7 +86,7 @@ struct RichDraftEditor: View {
             onChange: { store.send(.richDraftChanged(value: $0, formats: $1)) },
             onSend: onSend,
             onPasteImage: pasteImage,
-            onMentionCommand: draft.mentionCommand,
+            onMentionCommand: { draft.mentionCommand($0) || onCommand($0) },
             onEditLast: onEditLast,
             onDropFiles: onDropFiles,
             takeFocusRequest: takeFocusRequest

@@ -93,10 +93,6 @@ pub(crate) enum ConversationMsg {
     },
     /// The pause between two reactions is over.
     ReactionReady,
-    Edit(String),
-    EditChanged(String),
-    CancelEdit,
-    SaveEdit,
     Delete(String),
     Mutated {
         generation: u64,
@@ -147,7 +143,6 @@ pub(crate) struct ConversationState {
     importance: Tracked<Importance, { feeds::COMPOSER }>,
     sending: Tracked<bool, { feeds::COMPOSER }>,
     editing: Tracked<Option<String>, { feeds::EDITING }>,
-    edit_text: Tracked<String, { feeds::COMPOSER }>,
     reacting: Tracked<HashSet<(String, String)>, { feeds::MESSAGES }>,
     next_reaction: Tracked<Option<std::time::Instant>, { feeds::MESSAGES }>,
     images: Tracked<HashMap<String, media::ImageState>, { feeds::IMAGES }>,
@@ -186,7 +181,6 @@ impl ConversationState {
             importance,
             sending,
             editing,
-            edit_text,
             reacting,
             next_reaction,
             images,
@@ -214,7 +208,6 @@ impl ConversationState {
             | importance.take_changes()
             | sending.take_changes()
             | editing.take_changes()
-            | edit_text.take_changes()
             | reacting.take_changes()
             | next_reaction.take_changes()
             | images.take_changes()
@@ -287,9 +280,6 @@ impl ConversationState {
     pub(super) fn editing(&self) -> Option<&String> {
         self.editing.as_ref()
     }
-    pub(super) fn edit_text(&self) -> &str {
-        &self.edit_text
-    }
     pub(super) fn reacting(&self, selection: &Selection, id: &str) -> bool {
         self.reacting.contains(&(selection.key(), id.to_owned()))
     }
@@ -312,11 +302,27 @@ impl ConversationState {
     }
 
     pub(super) fn draft_key(&self, selected: Option<&Selection>) -> String {
-        format!(
-            "{}:{}",
-            selected.map(Selection::key).unwrap_or_default(),
-            self.reply.as_deref().unwrap_or("main")
-        )
+        let key = selected.map(Selection::key).unwrap_or_default();
+        match self.editing.as_deref() {
+            Some(id) => format!("{key}:edit:{id}"),
+            None => format!("{key}:{}", self.reply.as_deref().unwrap_or("main")),
+        }
+    }
+    /// Puts the draft aside to edit message `id` in its place; [`Self::end_edit`] brings it back.
+    pub(super) fn begin_edit(&mut self, selected: Option<&Selection>, id: String) {
+        self.save_draft(selected);
+        *self.editing = Some(id);
+    }
+    pub(super) fn end_edit(&mut self, selected: Option<&Selection>) {
+        if self.editing.is_none() {
+            return;
+        }
+        let key = self.draft_key(selected);
+        self.drafts.remove(&key);
+        self.subjects.remove(&key);
+        self.importances.remove(&key);
+        *self.editing = None;
+        self.restore_draft(selected);
     }
     pub(super) fn save_draft(&mut self, selected: Option<&Selection>) {
         if selected.is_some() {
@@ -400,7 +406,6 @@ impl ConversationState {
         *self.feed_cursor = None;
         *self.loading = false;
         *self.loading_replies = false;
-        *self.editing = None;
     }
     pub(super) fn begin_send(&mut self) {
         *self.sending = true;
@@ -413,6 +418,8 @@ impl ConversationState {
         current: bool,
         content: &str,
     ) -> bool {
+        // While a message is edited, the draft it went from is put aside.
+        let current = current && self.editing.is_none();
         let unchanged = if current {
             *self.draft == content
         } else {
@@ -672,58 +679,6 @@ impl ConversationState {
                 self.next_reaction.touch();
                 Task::none()
             }
-            M::Edit(id) => {
-                if let Some(m) = self.find_message(&id).filter(|m| m.sender_mri() == ctx.me) {
-                    *self.edit_text = html::to_text(&m.content);
-                    *self.editing = Some(id);
-                }
-                Task::none()
-            }
-            M::EditChanged(value) => {
-                *self.edit_text = value;
-                Task::none()
-            }
-            M::CancelEdit => {
-                *self.editing = None;
-                self.edit_text.clear();
-                Task::none()
-            }
-            M::SaveEdit => {
-                let (Some(id), Some(selection), Some(client)) = (
-                    self.editing.clone(),
-                    ctx.selected.cloned(),
-                    ctx.client.cloned(),
-                ) else {
-                    return Task::none();
-                };
-                if self.edit_text.trim().is_empty() {
-                    return Task::none();
-                }
-                let message = OutgoingMessage::html(
-                    client_message_id(),
-                    format!("<p>{}</p>", escape(self.edit_text.trim())),
-                    ctx.display_name,
-                );
-                let generation = ctx.generation;
-                Task::perform(
-                    async move {
-                        let result = client
-                            .edit_message(selection.id(), &id, &message)
-                            .await
-                            .map(drop)
-                            .map_err(|e| e.to_string());
-                        (selection, result)
-                    },
-                    move |(selection, result)| {
-                        ConversationMsg::Mutated {
-                            generation,
-                            selection,
-                            result,
-                        }
-                        .into()
-                    },
-                )
-            }
             M::Delete(id) => {
                 let (Some(selection), Some(client)) = (ctx.selected.cloned(), ctx.client.cloned())
                 else {
@@ -755,7 +710,6 @@ impl ConversationState {
                 selection, result, ..
             } => match result {
                 Ok(()) => {
-                    *self.editing = None;
                     if ctx.is_open(&selection) {
                         self.load_feed(ctx, false)
                     } else {
@@ -819,7 +773,7 @@ impl ConversationState {
         self.forget_dropped();
     }
     /// Messages, then thread replies, then channel posts.
-    fn find_message(&self, id: &str) -> Option<&Message> {
+    pub(super) fn find_message(&self, id: &str) -> Option<&Message> {
         self.messages
             .iter()
             .chain(self.replies.iter())

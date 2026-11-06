@@ -63,7 +63,8 @@ enum ComposerText {
         if let color = color(style.color) { attrs[.foregroundColor] = color }
         if let color = color(style.highlight) { attrs[.backgroundColor] = color }
         if let link = style.link { attrs[.link] = link }
-        if let id = style.image, let image = PastedImageAttachment.images[id] {
+        // An edited message's own images are keyed by address, and already shown in the feed.
+        if let id = style.image, let image = PastedImageAttachment.images[id] ?? MainActor.assumeIsolated({ Store.current?.shownImage(id) }) {
             attrs[.attachment] = PastedImageAttachment(id: id, image: image)
         }
         attrs[.composerCode] = style.code
@@ -89,6 +90,16 @@ enum ComposerText {
     /// Space above and below the text in the editor.
     static let verticalInset: CGFloat = 4
     static let lineFragmentPadding: CGFloat = 2
+    /// The editor's height for this text at this width, without making the view.
+    static func height(_ string: String, formats: [ComposerFormat], width: CGFloat) -> CGFloat {
+        let storage = NSTextStorage(attributedString: attributed(string, formats: formats))
+        let layout = ComposerLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: width, height: CGFloat.greatestFiniteMagnitude))
+        container.lineFragmentPadding = lineFragmentPadding
+        storage.addLayoutManager(layout)
+        layout.addTextContainer(container)
+        return height(of: layout, in: container)
+    }
     /// The editor's height for the text laid out in `container`.
     static func height(of layout: NSLayoutManager, in container: NSTextContainer) -> CGFloat {
         layout.ensureLayout(for: container)

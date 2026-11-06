@@ -67,17 +67,17 @@ pub struct Document {
     pub images: Vec<InlineImage>,
 }
 #[derive(Clone, Default)]
-struct Style {
-    link: Option<String>,
-    bold: bool,
-    italic: bool,
-    code: bool,
-    underline: bool,
-    strike: bool,
-    mention: bool,
-    color: Option<String>,
-    highlight: Option<String>,
-    size: u32,
+pub(crate) struct Style {
+    pub(crate) link: Option<String>,
+    pub(crate) bold: bool,
+    pub(crate) italic: bool,
+    pub(crate) code: bool,
+    pub(crate) underline: bool,
+    pub(crate) strike: bool,
+    pub(crate) mention: bool,
+    pub(crate) color: Option<String>,
+    pub(crate) highlight: Option<String>,
+    pub(crate) size: u32,
 }
 /// One container's content: finished blocks and the paragraph flow being built.
 #[derive(Default)]
@@ -303,7 +303,7 @@ fn flatten(blocks: &[Block], runs: &mut Vec<Run>) {
         }
     }
 }
-fn css(element: ElementRef<'_>, style: &mut Style) {
+pub(crate) fn css(element: ElementRef<'_>, style: &mut Style) {
     let Some(css) = element.value().attr("style") else {
         return;
     };
@@ -332,7 +332,7 @@ fn css(element: ElementRef<'_>, style: &mut Style) {
         }
     }
 }
-fn itemtype(element: ElementRef<'_>) -> &str {
+pub(crate) fn itemtype(element: ElementRef<'_>) -> &str {
     element
         .value()
         .attr("itemtype")
@@ -474,7 +474,7 @@ pub(crate) fn image_src<'a>(element: ElementRef<'a>) -> Option<&'a str> {
         .find(|s| !s.trim().is_empty() && !s.starts_with("blob:"))
 }
 /// Teams emoji are images of a Unicode character: keep the character in the text.
-fn emoji_text(element: ElementRef<'_>) -> String {
+pub(crate) fn emoji_text(element: ElementRef<'_>) -> String {
     let attrs = element.value();
     if let Some(alt) = attrs.attr("alt").map(str::trim).filter(|s| !s.is_empty()) {
         return alt.to_owned();
@@ -575,7 +575,7 @@ fn code(element: ElementRef<'_>) -> Block {
     Block::Code { language, text }
 }
 /// Code text as written: whitespace kept, `br` and block elements as line breaks.
-fn verbatim(element: ElementRef<'_>, out: &mut String) {
+pub(crate) fn verbatim(element: ElementRef<'_>, out: &mut String) {
     for child in element.children() {
         match child.value() {
             Node::Text(text) => out.push_str(text),

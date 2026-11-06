@@ -257,6 +257,8 @@ impl App {
                 Some(id) => {
                     if let Some(image) = self.inline_image(id) {
                         output.push_str(&image.tag());
+                    } else if let Some(posted) = self.posted_image(id) {
+                        output.push_str(posted);
                     }
                 }
                 None => {

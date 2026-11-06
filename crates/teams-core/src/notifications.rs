@@ -426,7 +426,7 @@ fn epoch_ms(time: Option<&str>) -> Option<i64> {
         .ok()
         .map(|t| t.timestamp_millis())
 }
-fn mentions(message: &Message) -> Vec<Value> {
+pub(super) fn mentions(message: &Message) -> Vec<Value> {
     match message.properties.get("mentions") {
         Some(Value::String(s)) => serde_json::from_str(s).unwrap_or_default(),
         Some(Value::Array(items)) => items.clone(),

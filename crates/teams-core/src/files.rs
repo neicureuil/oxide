@@ -649,13 +649,7 @@ impl App {
                 let Some(pending) = removed else {
                     return Task::none();
                 };
-                pending.cancel.store(true, Ordering::Relaxed);
-                match (pending.state, self.files_client()) {
-                    (PendingState::Ready(Uploaded::File(file)), Some(client)) => {
-                        recycle(client, file)
-                    }
-                    _ => Task::none(),
-                }
+                self.release(pending)
             }
             FileAction::SharedFilter { filter } => {
                 self.files.filter = filter;
@@ -1065,6 +1059,20 @@ impl App {
         let key = self.draft_key();
         if let Some(list) = self.files.attachments.get_mut(&key) {
             list.retain(|p| !matches!(p.source, Upload::Image { .. }) || placed.contains(&p.id));
+        }
+    }
+    /// Forgets the current draft's attachments.
+    pub(crate) fn discard_attachments(&mut self) -> Task<Msg> {
+        let key = self.draft_key();
+        let removed = self.files.attachments.remove(&key).unwrap_or_default();
+        Task::batch(removed.into_iter().map(|pending| self.release(pending)))
+    }
+    /// Stops a removed attachment's upload, and recycles its file if it is already in OneDrive.
+    fn release(&mut self, pending: Pending) -> Task<Msg> {
+        pending.cancel.store(true, Ordering::Relaxed);
+        match (pending.state, self.files_client()) {
+            (PendingState::Ready(Uploaded::File(file)), Some(client)) => recycle(client, file),
+            _ => Task::none(),
         }
     }
     /// A pasted image of the draft, once on AMS.

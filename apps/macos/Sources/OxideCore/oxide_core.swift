@@ -3303,7 +3303,6 @@ public struct ComposerView: Equatable, Hashable {
     public var mentionError: String?
     public var subject: String
     public var importance: Importance
-    public var editText: String
     /**
      * Files attached to the draft, uploading or ready.
      */
@@ -3319,7 +3318,7 @@ public struct ComposerView: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(sending: Bool, draft: String, draftRev: UInt64, draftCursor: UInt32, mentionRanges: [MentionRange], draftFormats: [ComposerFormat], mentionLoading: Bool, mentionError: String?, subject: String, importance: Importance, editText: String, 
+    public init(sending: Bool, draft: String, draftRev: UInt64, draftCursor: UInt32, mentionRanges: [MentionRange], draftFormats: [ComposerFormat], mentionLoading: Bool, mentionError: String?, subject: String, importance: Importance, 
         /**
          * Files attached to the draft, uploading or ready.
          */attachments: [PendingFileView], 
@@ -3339,7 +3338,6 @@ public struct ComposerView: Equatable, Hashable {
         self.mentionError = mentionError
         self.subject = subject
         self.importance = importance
-        self.editText = editText
         self.attachments = attachments
         self.cards = cards
         self.linkPreview = linkPreview
@@ -3371,7 +3369,6 @@ public struct FfiConverterTypeComposerView: FfiConverterRustBuffer {
                 mentionError: FfiConverterOptionString.read(from: &buf), 
                 subject: FfiConverterString.read(from: &buf), 
                 importance: FfiConverterTypeImportance.read(from: &buf), 
-                editText: FfiConverterString.read(from: &buf), 
                 attachments: FfiConverterSequenceTypePendingFileView.read(from: &buf), 
                 cards: FfiConverterSequenceTypeComposerCardView.read(from: &buf), 
                 linkPreview: FfiConverterOptionTypeLinkPreviewView.read(from: &buf)
@@ -3389,7 +3386,6 @@ public struct FfiConverterTypeComposerView: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.mentionError, into: &buf)
         FfiConverterString.write(value.subject, into: &buf)
         FfiConverterTypeImportance.write(value.importance, into: &buf)
-        FfiConverterString.write(value.editText, into: &buf)
         FfiConverterSequenceTypePendingFileView.write(value.attachments, into: &buf)
         FfiConverterSequenceTypeComposerCardView.write(value.cards, into: &buf)
         FfiConverterOptionTypeLinkPreviewView.write(value.linkPreview, into: &buf)
@@ -8782,8 +8778,6 @@ public enum Action: Equatable, Hashable {
     )
     case edit(id: String
     )
-    case editChanged(value: String
-    )
     case cancelEdit
     case saveEdit
     case delete(id: String
@@ -8985,23 +8979,20 @@ public struct FfiConverterTypeAction: FfiConverterRustBuffer {
         case 63: return .edit(id: try FfiConverterString.read(from: &buf)
         )
         
-        case 64: return .editChanged(value: try FfiConverterString.read(from: &buf)
+        case 64: return .cancelEdit
+        
+        case 65: return .saveEdit
+        
+        case 66: return .delete(id: try FfiConverterString.read(from: &buf)
         )
         
-        case 65: return .cancelEdit
-        
-        case 66: return .saveEdit
-        
-        case 67: return .delete(id: try FfiConverterString.read(from: &buf)
+        case 67: return .retryImage(src: try FfiConverterString.read(from: &buf)
         )
         
-        case 68: return .retryImage(src: try FfiConverterString.read(from: &buf)
+        case 68: return .showMessages(ids: try FfiConverterSequenceString.read(from: &buf)
         )
         
-        case 69: return .showMessages(ids: try FfiConverterSequenceString.read(from: &buf)
-        )
-        
-        case 70: return .openUrl(url: try FfiConverterString.read(from: &buf)
+        case 69: return .openUrl(url: try FfiConverterString.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -9316,36 +9307,31 @@ public struct FfiConverterTypeAction: FfiConverterRustBuffer {
             FfiConverterString.write(id, into: &buf)
             
         
-        case let .editChanged(value):
-            writeInt(&buf, Int32(64))
-            FfiConverterString.write(value, into: &buf)
-            
-        
         case .cancelEdit:
-            writeInt(&buf, Int32(65))
+            writeInt(&buf, Int32(64))
         
         
         case .saveEdit:
-            writeInt(&buf, Int32(66))
+            writeInt(&buf, Int32(65))
         
         
         case let .delete(id):
-            writeInt(&buf, Int32(67))
+            writeInt(&buf, Int32(66))
             FfiConverterString.write(id, into: &buf)
             
         
         case let .retryImage(src):
-            writeInt(&buf, Int32(68))
+            writeInt(&buf, Int32(67))
             FfiConverterString.write(src, into: &buf)
             
         
         case let .showMessages(ids):
-            writeInt(&buf, Int32(69))
+            writeInt(&buf, Int32(68))
             FfiConverterSequenceString.write(ids, into: &buf)
             
         
         case let .openUrl(url):
-            writeInt(&buf, Int32(70))
+            writeInt(&buf, Int32(69))
             FfiConverterString.write(url, into: &buf)
             
         }

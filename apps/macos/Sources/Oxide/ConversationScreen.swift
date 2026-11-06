@@ -8,6 +8,8 @@ struct ConversationChrome: Equatable {
     let tab: ConversationTab
     let replyOpen: Bool
     let readOnly: Bool
+    /// A message is edited in its bubble, from the draft the composers would show.
+    let editing: Bool
 }
 
 struct ConversationScreen: View, Equatable {
@@ -49,7 +51,7 @@ struct ConversationScreen: View, Equatable {
                                 .padding(.vertical, 12)
                                 .padding(.horizontal, 24)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                        } else {
+                        } else if !chrome.editing {
                             Composer(readOnly: chrome.readOnly, replyOpen: chrome.replyOpen, isChannel: view.isChannel)
                         }
                     }
@@ -209,7 +211,9 @@ private struct ThreadPanel: View {
             .padding(16)
             Divider().overlay(Theme.border)
             Feed(rows: \.threadFeed)
-            Composer(readOnly: chrome.readOnly, replyOpen: chrome.replyOpen, isChannel: true)
+            if !chrome.editing {
+                Composer(readOnly: chrome.readOnly, replyOpen: chrome.replyOpen, isChannel: true)
+            }
         }
         .background(Theme.surface)
     }
