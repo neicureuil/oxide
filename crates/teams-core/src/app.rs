@@ -2887,5 +2887,8 @@ fn client_message_id() -> String {
 }
 
 #[cfg(test)]
+#[path = "app/harness.rs"]
+pub(crate) mod harness;
+#[cfg(test)]
 #[path = "app/tests.rs"]
 mod tests;
