@@ -102,7 +102,7 @@ struct RichDraftEditor: View {
     }
 }
 
-/// The people a mention being typed can name, shown above the editor so it does not move while picking.
+/// The people a mention being typed can name.
 struct MentionPicker: View {
     let draft: RichDraft
 
@@ -192,5 +192,67 @@ struct MentionButton: View {
         }
         .buttonStyle(GhostButtonStyle())
         .help(L("ui.composer.mention_someone_2"))
+    }
+}
+
+/// The mention picker floating just above the mention being typed, out of the layout around the editor.
+/// It never takes the focus: the editor keeps the keys and moves in the list.
+struct FloatingMentionPicker: ViewModifier {
+    @Environment(Store.self) private var store
+    let input: DraftInput
+    @State private var panel = MentionPanel()
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: input.mention) { _, mention in
+                guard let mention, let text = input.textView else { return panel.close() }
+                panel.show(MentionPicker(draft: RichDraft(store: store, input: input)).environment(store),
+                           above: mention.range, in: text)
+            }
+            .onDisappear { panel.close() }
+    }
+}
+
+@MainActor
+final class MentionPanel {
+    static let width: CGFloat = 300
+    private var panel: NSPanel?
+    private var origin = NSPoint.zero
+    private var resized: NSObjectProtocol?
+
+    func show(_ content: some View, above range: NSRange, in text: NSTextView) {
+        guard let window = text.window else { return close() }
+        let line = text.firstRect(forCharacterRange: NSRange(location: range.location, length: 0), actualRange: nil)
+        origin = NSPoint(x: line.minX, y: line.maxY + 4)
+        // The list follows the query by itself; a new mention only moves it.
+        if let panel { return panel.setFrameOrigin(origin) }
+        let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.becomesKeyOnlyIfNeeded = true
+        // A new height keeps the top of the window: its bottom goes back above the line, so the list grows upwards.
+        resized = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: panel, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let panel = self.panel else { return }
+                panel.setFrameOrigin(self.origin)
+            }
+        }
+        let host = NSHostingController(rootView: content.frame(width: Self.width))
+        host.sizingOptions = [.preferredContentSize]
+        panel.contentViewController = host
+        panel.appearance = window.effectiveAppearance
+        panel.setFrameOrigin(origin)
+        window.addChildWindow(panel, ordered: .above)
+        self.panel = panel
+    }
+
+    func close() {
+        guard let panel else { return }
+        panel.parent?.removeChildWindow(panel)
+        panel.orderOut(nil)
+        if let resized { NotificationCenter.default.removeObserver(resized) }
+        resized = nil
+        self.panel = nil
     }
 }

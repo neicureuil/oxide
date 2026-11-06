@@ -20,12 +20,8 @@ struct Composer: View {
             Muted(L("ui.composer.this_conversation_is_read_only")).padding(20)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            VStack(alignment: .leading, spacing: 6) {
-                // Above the box rather than inside it, so the editor does not move while picking.
-                if input.mention != nil { MentionPicker(draft: draft) }
-                box
-            }
-            .padding(EdgeInsets(top: 0, leading: 20, bottom: 16, trailing: 20))
+            box
+                .padding(EdgeInsets(top: 0, leading: 20, bottom: 16, trailing: 20))
         }
     }
 
@@ -54,6 +50,7 @@ struct Composer: View {
                 onDropFiles: { store.send(.files(action: .attach(paths: $0))) },
                 takeFocusRequest: store.takeComposerFocusRequest
             )
+            .modifier(FloatingMentionPicker(input: input))
             .frame(height: min(max(height, 40), 140))
             if let link = composer.linkPreview {
                 LinkPreviewCard(preview: link) { store.send(.linkPreview(action: .dismiss)) }
