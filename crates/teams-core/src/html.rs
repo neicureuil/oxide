@@ -448,11 +448,7 @@ fn image(element: ElementRef<'_>, images: &mut Vec<InlineImage>) -> Option<Inlin
             .filter(|v| *v >= 1.0)
             .map(|v| v.round() as u32)
     };
-    let src = ["data-orig-src", "data-image-url", "src"]
-        .into_iter()
-        .filter_map(|key| attrs.attr(key))
-        .find(|s| !s.trim().is_empty() && !s.starts_with("blob:"));
-    if let Some(src) = src
+    if let Some(src) = image_src(element)
         && !images.iter().any(|i| i.src == src)
     {
         let image = InlineImage {
@@ -469,6 +465,13 @@ fn image(element: ElementRef<'_>, images: &mut Vec<InlineImage>) -> Option<Inlin
         return Some(image);
     }
     None
+}
+/// Where an `<img>` shows its picture from, which is also its key among a message's images.
+pub(crate) fn image_src<'a>(element: ElementRef<'a>) -> Option<&'a str> {
+    ["data-orig-src", "data-image-url", "src"]
+        .into_iter()
+        .filter_map(|key| element.value().attr(key))
+        .find(|s| !s.trim().is_empty() && !s.starts_with("blob:"))
 }
 /// Teams emoji are images of a Unicode character: keep the character in the text.
 fn emoji_text(element: ElementRef<'_>) -> String {
