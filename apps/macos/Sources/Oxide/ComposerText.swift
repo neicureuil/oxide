@@ -86,6 +86,14 @@ enum ComposerText {
         style.link = nil
         return style
     }
+    /// Space above and below the text in the editor.
+    static let verticalInset: CGFloat = 4
+    static let lineFragmentPadding: CGFloat = 2
+    /// The editor's height for the text laid out in `container`.
+    static func height(of layout: NSLayoutManager, in container: NSTextContainer) -> CGFloat {
+        layout.ensureLayout(for: container)
+        return layout.usedRect(for: container).height + verticalInset * 2
+    }
     static func attributed(_ string: String, formats: [ComposerFormat]) -> NSAttributedString {
         let result = NSMutableAttributedString(string: string, attributes: base)
         for style in formats {
