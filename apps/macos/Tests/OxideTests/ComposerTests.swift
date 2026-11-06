@@ -95,6 +95,14 @@ final class ComposerTests: XCTestCase {
         input.capture("@Alice @bo", selection: NSRange(location: 10, length: 0), mentions: [MentionRange(start: 0, length: 6)])
         XCTAssertEqual(input.mention?.query, "bo")
     }
+    @MainActor func testAReplyQuotesItsLineThenBreaksItWherePlainTextFollows() {
+        var quote = ComposerText.empty
+        quote.block = .quote
+        XCTAssertEqual(Store.replyEdits(quoting: "Bob 😀: ok"), [
+            .replaceDraft(start: 0, length: 0, text: "Bob 😀: ok", mention: nil, emoji: nil, style: quote),
+            .replaceDraft(start: 10, length: 0, text: "\n", mention: nil, emoji: nil, style: ComposerText.empty),
+        ])
+    }
 }
 
 extension ComposerTests {
@@ -130,6 +138,44 @@ extension ComposerTests {
         XCTAssertTrue(ComposerText.formats(text).contains { $0.link == "https://example.test/?a=1&b=2" })
         input.toggle(.code)
         XCTAssertTrue(ComposerText.formats(text).contains { $0.code })
+    }
+    func testTheLineBelowAReplyQuoteTypesWithoutItsIndent() {
+        let text = ComposerTextView()
+        text.showDraft("Alice\n", formats: replyFormats, cursor: 6)
+        XCTAssertEqual(ComposerText.block(text.typingAttributes), .paragraph)
+        XCTAssertEqual((text.typingAttributes[.paragraphStyle] as? NSParagraphStyle)?.headIndent, 0)
+    }
+    func testAnEmptiedDraftTypesPlainTextAfterAQuote() {
+        let text = ComposerTextView()
+        text.showDraft("Alice", formats: [replyFormats[0]], cursor: 5)
+        XCTAssertEqual(ComposerText.block(text.typingAttributes), .quote)
+        text.showDraft("", formats: [], cursor: 0)
+        XCTAssertEqual(ComposerText.block(text.typingAttributes), .paragraph)
+        XCTAssertEqual((text.typingAttributes[.paragraphStyle] as? NSParagraphStyle)?.headIndent, 0)
+    }
+    private var replyFormats: [ComposerFormat] {
+        var quote = ComposerText.empty
+        quote.length = 5
+        quote.block = .quote
+        var plain = ComposerText.empty
+        plain.start = 5
+        plain.length = 1
+        return [quote, plain]
+    }
+    func testTypingTakesTheRunAtTheCaretWithoutItsLinkOrImage() {
+        var heading = ComposerText.empty
+        heading.length = 2
+        heading.block = .heading1
+        heading.link = "https://example.test"
+        XCTAssertEqual(ComposerText.typing([heading], at: 0).block, .heading1)
+        XCTAssertEqual(ComposerText.typing(replyFormats, at: 5).block, .quote)
+        XCTAssertNil(ComposerText.typing([heading], at: 2).link)
+        var image = ComposerText.empty
+        image.length = 1
+        image.bold = true
+        image.image = "img"
+        XCTAssertTrue(ComposerText.typing([image], at: 1).bold)
+        XCTAssertNil(ComposerText.typing([image], at: 1).image)
     }
     func testTypingStyleWorksInEmptyEditorAndClears() {
         let text = NSTextView()

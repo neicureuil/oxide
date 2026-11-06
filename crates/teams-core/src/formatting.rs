@@ -423,6 +423,42 @@ mod tests {
         assert_eq!(app.composer_html(), html);
     }
     #[test]
+    fn a_reply_quote_leaves_the_caret_on_a_plain_line_below_it() {
+        let mut app = app();
+        app.conv.draft_typed("Hi".into());
+        let quote = ComposerFormat {
+            block: ComposerBlock::Quote,
+            ..Default::default()
+        };
+        let _ = app.update(Msg::ReplaceDraft {
+            start: 0,
+            length: 0,
+            text: "Alice: ok".into(),
+            mention: None,
+            emoji: None,
+            style: Some(quote),
+        });
+        let _ = app.update(Msg::ReplaceDraft {
+            start: 9,
+            length: 0,
+            text: "\n".into(),
+            mention: None,
+            emoji: None,
+            style: Some(ComposerFormat::default()),
+        });
+        assert_eq!(app.conv.draft(), "Alice: ok\nHi");
+        assert_eq!(app.conv.cursor(), 10);
+        let blocks: Vec<_> = app
+            .draft_formats()
+            .into_iter()
+            .map(|f| (f.start, f.length, f.block))
+            .collect();
+        assert_eq!(
+            blocks,
+            [(0, 9, ComposerBlock::Quote), (9, 1, ComposerBlock::Paragraph)]
+        );
+    }
+    #[test]
     fn text_typed_next_to_an_image_is_not_an_image() {
         let mut app = app();
         let image = ComposerFormat {

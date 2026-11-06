@@ -166,12 +166,19 @@ final class Store {
         let excerpt = words.count > 160 ? words.prefix(160) + "…" : words
         let author = message.mine ? L("ui.store.you") : message.sender
         let line = L("ui.store.text", ["author": author, "excerpt": excerpt])
+        Self.replyEdits(quoting: line).forEach(send)
+        focusComposer()
+    }
+    /// The draft edits opening a reply: the quoted line, then a plain line break, which the core's caret ends after,
+    /// where the answer is typed.
+    static func replyEdits(quoting line: String) -> [Action] {
         var quote = ComposerText.empty
         quote.block = .quote
-        // The line break stays a plain paragraph, where the answer is typed.
-        send(.replaceDraft(start: 0, length: 0, text: "\n", mention: nil, emoji: nil, style: ComposerText.empty))
-        send(.replaceDraft(start: 0, length: 0, text: line, mention: nil, emoji: nil, style: quote))
-        focusComposer()
+        return [
+            .replaceDraft(start: 0, length: 0, text: line, mention: nil, emoji: nil, style: quote),
+            .replaceDraft(start: UInt32((line as NSString).length), length: 0, text: "\n", mention: nil, emoji: nil,
+                          style: ComposerText.empty),
+        ]
     }
     func focusComposer() {
         // Kept for a composer that appears afterwards, such as the thread's.

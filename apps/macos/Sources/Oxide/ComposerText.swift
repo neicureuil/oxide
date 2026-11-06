@@ -78,6 +78,14 @@ enum ComposerText {
         attrs[.paragraphStyle] = paragraph
         return attrs
     }
+    /// The format text typed at `caret` takes, from the run the core would extend there; like AppKit, neither an
+    /// image nor a link carries on into typed text.
+    static func typing(_ formats: [ComposerFormat], at caret: Int) -> ComposerFormat {
+        var style = formats.first { Int($0.start) <= caret && caret <= Int($0.start + $0.length) } ?? empty
+        style.image = nil
+        style.link = nil
+        return style
+    }
     static func attributed(_ string: String, formats: [ComposerFormat]) -> NSAttributedString {
         let result = NSMutableAttributedString(string: string, attributes: base)
         for style in formats {
@@ -171,6 +179,13 @@ final class ComposerTextView: NSTextView {
     static func droppedFiles(from pasteboard: NSPasteboard) -> [String] {
         let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]
         return (urls ?? []).map(\.path)
+    }
+    /// Shows the draft the core holds, with the caret at `cursor`, typing on in the core's format there.
+    func showDraft(_ draft: String, formats: [ComposerFormat], cursor: Int) {
+        let caret = min(cursor, (draft as NSString).length)
+        textStorage?.setAttributedString(ComposerText.attributed(draft, formats: formats))
+        setSelectedRange(NSRange(location: caret, length: 0))
+        typingAttributes = ComposerText.attributes(ComposerText.typing(formats, at: caret))
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command), [36, 76].contains(event.keyCode), !hasMarkedText() {
