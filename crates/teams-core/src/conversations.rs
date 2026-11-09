@@ -226,6 +226,10 @@ pub(crate) fn resolve_names_in<'a>(
     }
 }
 pub fn needs_details(chat: &Conversation, me: &str) -> bool {
+    // Teams' own streams (activity, mentions, call logs...) have no members to look up; the notes to self do.
+    if chat.id.starts_with("48:") && chat.id != NOTES {
+        return false;
+    }
     let complete_dm = chat.is_one_on_one()
         && chat.members.len() >= 2
         && chat
@@ -718,6 +722,22 @@ mod tests {
             Some("Bruno Externe")
         );
         server.abort();
+    }
+    #[test]
+    fn system_streams_need_no_roster_request_but_notes_to_self_do() {
+        let chat = |id: &str| -> Conversation {
+            serde_json::from_value(json!({"id": id, "members": []})).unwrap()
+        };
+        for stream in [
+            "48:notifications",
+            "48:mentions",
+            "48:calllogs",
+            "48:threads",
+            "48:generic",
+        ] {
+            assert!(!needs_details(&chat(stream), "me"), "{stream}");
+        }
+        assert!(needs_details(&chat(NOTES), "me"));
     }
     #[test]
     fn known_direct_messages_need_no_roster_request_and_member_names_survive_refresh() {
