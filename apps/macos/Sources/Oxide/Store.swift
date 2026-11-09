@@ -416,6 +416,8 @@ final class Store {
         return (sum(avatars), sum(images))
     }
 
+    /// A message image as decoded for the feed, if it is.
+    func shownImage(_ src: String) -> NSImage? { images[src]?.image }
     func imageBox(_ src: String) -> ImageBox {
         if let box = images[src] { return box }
         let box = ImageBox()
@@ -498,6 +500,15 @@ extension NSPasteboard {
 extension Notification.Name {
     /// Puts the keyboard focus in the visible message composer.
     static let focusComposer = Notification.Name("Oxide.focusComposer")
+    /// A row of the feed changed height without changing content; the object is a `FeedRowResize`.
+    static let feedRowResized = Notification.Name("Oxide.feedRowResized")
+}
+
+/// A row to measure again, and what it shows beyond the copy the feed measures, which has none of its view state.
+struct FeedRowResize {
+    /// The message's id, which a post's row shows as its root.
+    let id: String
+    let extra: CGFloat
 }
 
 @MainActor

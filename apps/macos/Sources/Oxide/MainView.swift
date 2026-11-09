@@ -358,7 +358,7 @@ struct ContentRouter: View {
             default:
                 if let conversation = store.conversation {
                     ConversationScreen(
-                        chrome: ConversationChrome(tab: shell.tab, replyOpen: shell.replyOpen, readOnly: shell.readOnly),
+                        chrome: ConversationChrome(tab: shell.tab, replyOpen: shell.replyOpen, readOnly: shell.readOnly, editing: shell.editing != nil),
                         view: conversation
                     )
                     .equatable()

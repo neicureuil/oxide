@@ -77,6 +77,8 @@ pub(crate) mod notify_rules;
 pub(crate) mod push;
 #[path = "receipts.rs"]
 pub(crate) mod receipts;
+#[path = "rich_edit.rs"]
+pub(crate) mod rich_edit;
 #[path = "teams_admin.rs"]
 pub(crate) mod teams_admin;
 #[path = "search.rs"]
@@ -433,6 +435,18 @@ pub(crate) enum Msg {
         style: Option<formatting::ComposerFormat>,
     },
     Send,
+    /// Edits one of my messages in the rich draft, the open draft put aside meanwhile.
+    Edit(String),
+    CancelEdit,
+    SaveEdit,
+    EditSaved {
+        generation: u64,
+        selection: Selection,
+        id: String,
+        /// What was sent, to tell whether the draft changed since.
+        html: String,
+        result: Result<(), String>,
+    },
     Sent {
         generation: u64,
         selection: Selection,
@@ -1134,8 +1148,17 @@ impl App {
         match msg {
             Msg::TeamList(msg) => self.update_team_list(msg),
             Msg::Conversation(msg) => {
+                // The draft an edit puts aside is the open reply's.
+                let ended = if matches!(
+                    msg,
+                    ConversationMsg::OpenReply(_) | ConversationMsg::CloseReply
+                ) {
+                    self.end_edit()
+                } else {
+                    Task::none()
+                };
                 let (conv, ctx) = self.conversation();
-                conv.update(&ctx, msg)
+                Task::batch([ended, conv.update(&ctx, msg)])
             }
             Msg::ShowError(error) => {
                 *self.error = Some(error);
@@ -1629,6 +1652,7 @@ impl App {
                         .and_then(view::read_horizon),
                     Selection::Channel { .. } => None,
                 };
+                let ended = self.end_edit();
                 self.conv.switch(
                     self.selected.as_ref(),
                     &selection,
@@ -1645,7 +1669,7 @@ impl App {
                 } else {
                     Nav::Chat
                 };
-                self.load_feed(false)
+                Task::batch([ended, self.load_feed(false)])
             }
             Msg::ToggleTeam(id) => {
                 if !self.expanded.remove(&id) {
@@ -1880,9 +1904,22 @@ impl App {
                 }
                 Task::none()
             }
+            Msg::Edit(id) => self.begin_edit(id),
+            Msg::CancelEdit => self.end_edit(),
+            Msg::SaveEdit => self.save_edit(),
+            Msg::EditSaved {
+                generation,
+                selection,
+                id,
+                html,
+                result,
+            } => self.edit_saved(generation, selection, id, html, result),
             Msg::Send => {
                 if self.read_only() {
                     return Task::none();
+                }
+                if self.conv.editing().is_some() {
+                    return self.save_edit();
                 }
                 self.drop_unplaced_images();
                 if self.conv.sending()
@@ -2886,6 +2923,9 @@ fn client_message_id() -> String {
     chrono::Utc::now().timestamp_micros().to_string()
 }
 
+#[cfg(test)]
+#[path = "app/harness.rs"]
+pub(crate) mod harness;
 #[cfg(test)]
 #[path = "app/tests.rs"]
 mod tests;

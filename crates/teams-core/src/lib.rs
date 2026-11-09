@@ -260,9 +260,6 @@ pub enum Action {
     Edit {
         id: String,
     },
-    EditChanged {
-        value: String,
-    },
     CancelEdit,
     SaveEdit,
     Delete {
@@ -388,10 +385,9 @@ fn message(app: &App, action: Action) -> Option<Msg> {
         Action::NewTitle { title } => Msg::NewTitle(title),
         Action::CreateChat => Msg::CreateChat,
         Action::React { id, key } => ConversationMsg::React { id, key }.into(),
-        Action::Edit { id } => ConversationMsg::Edit(id).into(),
-        Action::EditChanged { value } => ConversationMsg::EditChanged(value).into(),
-        Action::CancelEdit => ConversationMsg::CancelEdit.into(),
-        Action::SaveEdit => ConversationMsg::SaveEdit.into(),
+        Action::Edit { id } => Msg::Edit(id),
+        Action::CancelEdit => Msg::CancelEdit,
+        Action::SaveEdit => Msg::SaveEdit,
         Action::Delete { id } => ConversationMsg::Delete(id).into(),
         Action::RetryImage { src } => ConversationMsg::RetryImage(src).into(),
         Action::ShowMessages { ids } => ConversationMsg::Shown(ids).into(),

@@ -63,7 +63,8 @@ enum ComposerText {
         if let color = color(style.color) { attrs[.foregroundColor] = color }
         if let color = color(style.highlight) { attrs[.backgroundColor] = color }
         if let link = style.link { attrs[.link] = link }
-        if let id = style.image, let image = PastedImageAttachment.images[id] {
+        // An edited message's own images are keyed by address, and already shown in the feed.
+        if let id = style.image, let image = PastedImageAttachment.images[id] ?? MainActor.assumeIsolated({ Store.current?.shownImage(id) }) {
             attrs[.attachment] = PastedImageAttachment(id: id, image: image)
         }
         attrs[.composerCode] = style.code
@@ -86,8 +87,26 @@ enum ComposerText {
         style.link = nil
         return style
     }
+    /// Space above and below the text in the editor.
+    static let verticalInset: CGFloat = 4
+    static let lineFragmentPadding: CGFloat = 2
+    /// The editor's height for this text at this width, without making the view.
+    static func height(_ string: String, formats: [ComposerFormat], width: CGFloat) -> CGFloat {
+        let storage = NSTextStorage(attributedString: attributed(string, formats: formats))
+        let layout = ComposerLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: width, height: CGFloat.greatestFiniteMagnitude))
+        container.lineFragmentPadding = lineFragmentPadding
+        storage.addLayoutManager(layout)
+        layout.addTextContainer(container)
+        return height(of: layout, in: container)
+    }
+    /// The editor's height for the text laid out in `container`.
+    static func height(of layout: NSLayoutManager, in container: NSTextContainer) -> CGFloat {
+        layout.ensureLayout(for: container)
+        return layout.usedRect(for: container).height + verticalInset * 2
+    }
     static func attributed(_ string: String, formats: [ComposerFormat]) -> NSAttributedString {
-        let result = NSMutableAttributedString(string: string, attributes: base)
+        let result = NSMutableAttributedString(string: string, attributes: attributes(empty))
         for style in formats {
             let range = NSRange(location: Int(style.start), length: Int(style.length))
             if NSMaxRange(range) <= result.length { result.setAttributes(attributes(style), range: range) }

@@ -13,10 +13,22 @@ pub(super) struct Token {
     text: String,
     kind: TokenKind,
 }
+impl Token {
+    pub(super) fn new(start: usize, text: String, kind: TokenKind) -> Self {
+        Self {
+            start,
+            end: start + text.len(),
+            text,
+            kind,
+        }
+    }
+}
 #[derive(Default)]
 pub(super) struct ComposerState {
     pub tokens: HashMap<String, Vec<Token>>,
     pub formats: HashMap<String, Vec<super::formatting::ComposerFormat>>,
+    /// What the message being edited sends back as posted.
+    pub edited: Option<super::rich_edit::Posted>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Record)]
 pub struct MentionRange {

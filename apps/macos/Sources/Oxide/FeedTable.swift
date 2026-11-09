@@ -27,6 +27,15 @@ enum FeedItem: Identifiable, Equatable {
         }
     }
 
+    /// Whether this row shows the message, on its own or as the root of a post.
+    func shows(message id: String) -> Bool {
+        switch self {
+        case .message(let message, _, _): message.id == id
+        case .post(let post, _): post.root.id == id
+        default: false
+        }
+    }
+
     static func == (a: FeedItem, b: FeedItem) -> Bool {
         switch (a, b) {
         case let (.more(l1, a1, d1), .more(l2, a2, d2)): l1 == l2 && a1 == a2 && d1 == d2
@@ -186,6 +195,8 @@ struct FeedTable: NSViewRepresentable {
         private var measureQueued = false
         private var resizeWork: DispatchWorkItem?
         private let sizer = NSHostingController(rootView: FeedRow(store: nil, item: nil))
+        /// Height rows show beyond what `sizer` sees, as they reported it.
+        private var extra: [String: CGFloat] = [:]
         private var observers: [NSObjectProtocol] = []
         /// Messages and posts last reported on screen, whose previews the core loads first.
         private var shown: [String] = []
@@ -224,6 +235,17 @@ struct FeedTable: NSViewRepresentable {
                 MainActor.assumeIsolated {
                     self?.measureVisible()
                     self?.reportPosition()
+                }
+            })
+            observers.append(NotificationCenter.default.addObserver(
+                forName: .feedRowResized, object: nil, queue: .main
+            ) { [weak self] note in
+                guard let resize = note.object as? FeedRowResize else { return }
+                MainActor.assumeIsolated {
+                    guard let self, let item = self.items.first(where: { $0.shows(message: resize.id) }) else { return }
+                    self.forget(item.id)
+                    self.extra[item.id] = resize.extra > 0 ? resize.extra : nil
+                    self.measureVisible()
                 }
             })
             wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self, weak scroll] event in
@@ -359,14 +381,15 @@ struct FeedTable: NSViewRepresentable {
             }
         }
 
-        /// A sideways scroll view inside a row (a code block) would otherwise swallow vertical scrolling while under the pointer.
-        /// Each gesture is routed as a whole, from the direction it starts in.
+        /// A sideways scroll view inside a row (a code block) would otherwise swallow vertical scrolling while under the pointer;
+        /// one that scrolls vertically and has more content than height keeps it. Each gesture is routed as a whole, from the direction it starts in.
         private func routeWheel(_ event: NSEvent, to scroll: NSScrollView) -> Bool {
             guard event.window === scroll.window else { return false }
             if event.phase.contains(.began) || (event.phase.isEmpty && event.momentumPhase.isEmpty) {
                 let hit = scroll.window?.contentView?.hitTest(event.locationInWindow)
-                let inRow = hit?.enclosingScrollView.map { $0 !== scroll && $0.isDescendant(of: scroll) } ?? false
-                wheelToFeed = inRow && abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX)
+                let inner = hit?.enclosingScrollView.flatMap { $0 !== scroll && $0.isDescendant(of: scroll) ? $0 : nil }
+                let innerScrollsDown = inner.map { $0.hasVerticalScroller && ($0.documentView?.frame.height ?? 0) > $0.contentView.bounds.height } ?? false
+                wheelToFeed = inner != nil && !innerScrollsDown && abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX)
             }
             guard wheelToFeed else { return false }
             scroll.scrollWheel(with: event)
@@ -526,7 +549,7 @@ struct FeedTable: NSViewRepresentable {
                 }
                 sizer.rootView = FeedRow(store: store, item: item)
                 let size = sizer.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude))
-                exact[item.id] = max(ceil(size.height), 1)
+                exact[item.id] = max(ceil(size.height + (extra[item.id] ?? 0)), 1)
                 changed.insert(row)
             }
             if unfinished && !measureQueued {

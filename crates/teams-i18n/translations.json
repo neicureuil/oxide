@@ -4447,9 +4447,13 @@
     "fr": "Agrandir l’image",
     "en": "Enlarge image"
   },
+  "ui.message_row.enter_to_save": {
+    "fr": "⌘ Entrée pour enregistrer",
+    "en": "⌘ Enter to save"
+  },
   "ui.message_row.enter_to_save_enter_for_a": {
-    "fr": "Entrée pour enregistrer · ⌥ Entrée pour une nouvelle ligne",
-    "en": "Enter to save · ⌥ Enter for a new line"
+    "fr": "Entrée pour enregistrer · ⇧ Entrée pour une nouvelle ligne",
+    "en": "Enter to save · ⇧ Enter for a new line"
   },
   "ui.message_row.files": {
     "fr": "{filesCount} fichiers",

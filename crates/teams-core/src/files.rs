@@ -649,13 +649,7 @@ impl App {
                 let Some(pending) = removed else {
                     return Task::none();
                 };
-                pending.cancel.store(true, Ordering::Relaxed);
-                match (pending.state, self.files_client()) {
-                    (PendingState::Ready(Uploaded::File(file)), Some(client)) => {
-                        recycle(client, file)
-                    }
-                    _ => Task::none(),
-                }
+                self.release(pending)
             }
             FileAction::SharedFilter { filter } => {
                 self.files.filter = filter;
@@ -1065,6 +1059,20 @@ impl App {
         let key = self.draft_key();
         if let Some(list) = self.files.attachments.get_mut(&key) {
             list.retain(|p| !matches!(p.source, Upload::Image { .. }) || placed.contains(&p.id));
+        }
+    }
+    /// Forgets the current draft's attachments.
+    pub(crate) fn discard_attachments(&mut self) -> Task<Msg> {
+        let key = self.draft_key();
+        let removed = self.files.attachments.remove(&key).unwrap_or_default();
+        Task::batch(removed.into_iter().map(|pending| self.release(pending)))
+    }
+    /// Stops a removed attachment's upload, and recycles its file if it is already in OneDrive.
+    fn release(&mut self, pending: Pending) -> Task<Msg> {
+        pending.cancel.store(true, Ordering::Relaxed);
+        match (pending.state, self.files_client()) {
+            (PendingState::Ready(Uploaded::File(file)), Some(client)) => recycle(client, file),
+            _ => Task::none(),
         }
     }
     /// A pasted image of the draft, once on AMS.
@@ -1681,59 +1689,8 @@ mod tests {
         assert_eq!(ext("archive"), "FIC");
     }
 
-    use crate::task::{Job, Sink};
-    use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+    use crate::app::harness::Harness;
 
-    /// Drives the app like the core thread does, against the demo services.
-    struct Harness {
-        app: App,
-        tx: UnboundedSender<Msg>,
-        rx: UnboundedReceiver<Msg>,
-        effects: Vec<Effect>,
-    }
-    impl Harness {
-        fn run(&mut self, task: Task<Msg>) {
-            for job in task.0 {
-                match job {
-                    Job::Effect(effect) => self.effects.push(effect),
-                    Job::Future(future) => {
-                        let tx = self.tx.clone();
-                        tokio::spawn(async move {
-                            let _ = tx.send(future.await);
-                        });
-                    }
-                    Job::Subscribe(start) => {
-                        let tx = self.tx.clone();
-                        tokio::spawn(start(Sink::new(move |msg| {
-                            let _ = tx.send(msg);
-                        })));
-                    }
-                    Job::Done(msg) => {
-                        let _ = self.tx.send(msg);
-                    }
-                }
-            }
-        }
-        fn send(&mut self, msg: Msg) {
-            let task = self.app.update(msg);
-            self.run(task);
-        }
-        fn file(&mut self, action: FileAction) {
-            self.send(Msg::Files(FilesMsg::Action(action)));
-        }
-        async fn until(&mut self, what: &str, done: impl Fn(&App) -> bool) {
-            let deadline = std::time::Instant::now() + Duration::from_secs(15);
-            while !done(&self.app) {
-                let left = deadline.saturating_duration_since(std::time::Instant::now());
-                let msg = tokio::time::timeout(left, self.rx.recv())
-                    .await
-                    .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
-                    .expect("channel open");
-                let task = self.app.update(msg);
-                self.run(task);
-            }
-        }
-    }
     fn local_file(name: &str, text: &str) -> String {
         let dir = std::env::temp_dir().join(format!(
             "teams-core-files-{}",
@@ -1747,15 +1704,7 @@ mod tests {
 
     #[tokio::test]
     async fn channel_files_tab_comes_back_after_the_files_screen() {
-        let (app, task) = App::boot(true);
-        let (tx, rx) = unbounded_channel();
-        let mut h = Harness {
-            app,
-            tx,
-            rx,
-            effects: vec![],
-        };
-        h.run(task);
+        let mut h = Harness::demo();
         h.until("workspace", |a| !a.teams.is_empty() && !a.chats.is_empty())
             .await;
         let channel = || Msg::Select(Selection::Channel {
@@ -1781,15 +1730,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_pasted_image_goes_where_it_is_in_the_text_and_a_deleted_one_stays_out() {
-        let (app, task) = App::boot(true);
-        let (tx, rx) = unbounded_channel();
-        let mut h = Harness {
-            app,
-            tx,
-            rx,
-            effects: vec![],
-        };
-        h.run(task);
+        let mut h = Harness::demo();
         h.until("workspace", |a| !a.chats.is_empty()).await;
         h.send(Msg::Select(Selection::Chat("19:projet-rust@thread.v2".into())));
         h.until("feed", |a| !a.conv.messages().is_empty()).await;
@@ -1838,15 +1779,7 @@ mod tests {
     }
     #[tokio::test]
     async fn demo_attach_send_download_share_and_browse() {
-        let (app, task) = App::boot(true);
-        let (tx, rx) = unbounded_channel();
-        let mut h = Harness {
-            app,
-            tx,
-            rx,
-            effects: vec![],
-        };
-        h.run(task);
+        let mut h = Harness::demo();
         h.until("workspace", |a| !a.teams.is_empty() && !a.chats.is_empty())
             .await;
 
