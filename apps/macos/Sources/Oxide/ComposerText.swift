@@ -95,7 +95,7 @@ enum ComposerText {
         return layout.usedRect(for: container).height + verticalInset * 2
     }
     static func attributed(_ string: String, formats: [ComposerFormat]) -> NSAttributedString {
-        let result = NSMutableAttributedString(string: string, attributes: base)
+        let result = NSMutableAttributedString(string: string, attributes: attributes(empty))
         for style in formats {
             let range = NSRange(location: Int(style.start), length: Int(style.length))
             if NSMaxRange(range) <= result.length { result.setAttributes(attributes(style), range: range) }

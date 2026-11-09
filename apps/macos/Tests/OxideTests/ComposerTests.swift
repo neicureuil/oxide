@@ -120,6 +120,14 @@ extension ComposerTests {
         XCTAssertEqual(styled.size, 18)
         XCTAssertEqual(ComposerText.attributed(text.string, formats: runs).string, original)
     }
+    func testTextWithoutFormatsIsLaidOutAsTheEditorDescribesItBack() {
+        let string = "un\ndeux\ntrois"
+        let text = NSTextView()
+        text.textStorage?.setAttributedString(ComposerText.attributed(string, formats: []))
+        let described = ComposerText.formats(text)
+        XCTAssertEqual(ComposerText.height(string, formats: [], width: 300),
+                       ComposerText.height(string, formats: described, width: 300))
+    }
     func testToolbarChangesOnlySelectionAndCodeListsAndLinksSerialize() {
         let text = NSTextView()
         text.isRichText = true
