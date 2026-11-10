@@ -4463,6 +4463,10 @@
     "fr": "{filesCount} fichiers",
     "en": "{filesCount} files"
   },
+  "ui.message_row.image": {
+    "fr": "image",
+    "en": "image"
+  },
   "ui.message_row.images": {
     "fr": "{imagesCount} images",
     "en": "{imagesCount} images"

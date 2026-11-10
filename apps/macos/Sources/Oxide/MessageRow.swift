@@ -229,6 +229,7 @@ struct MessageRow: View {
     }
 
     @ViewBuilder private var content: some View {
+        let caption = ImageCaption(sender: message.mine ? L("ui.message_row.you") : message.sender, time: message.time)
         VStack(alignment: message.mine && bubble ? .trailing : .leading, spacing: 8) {
             if message.importance != .standard { ImportanceTag(importance: message.importance) }
             if let subject = message.subject {
@@ -258,6 +259,7 @@ struct MessageRow: View {
             ForEach(message.files, id: \.key) { FileCard(file: $0).frame(width: 340) }
             if let link = message.linkPreview { LinkPreviewCard(preview: link).frame(width: 340) }
         }
+        .environment(\.imageCaption, caption)
     }
 
     private var editor: some View {
@@ -382,6 +384,7 @@ private struct DraftHeight: Layout {
 /// A fixed box whether loaded or not, so rows never resize: the declared size capped like the web client, else 420×250.
 struct PreviewImage: View {
     @Environment(Store.self) private var store
+    @Environment(\.imageCaption) private var caption
     let image: ImageView
     var height: CGFloat = 250
 
@@ -430,7 +433,9 @@ struct PreviewImage: View {
             box.frame(maxWidth: 420).frame(height: height)
         }
     }
-    @State private var zoomed = false
+    private func zoom(_ picture: NSImage) {
+        store.zoomedImage = ZoomedImage(picture: picture, alt: image.alt, caption: caption)
+    }
     /// The alt text is kept for VoiceOver only: Teams fills it with « image » or a file name.
     private var box: some View {
         ZStack(alignment: .topLeading) {
@@ -446,14 +451,13 @@ struct PreviewImage: View {
                         .interpolation(.medium)
                         .scaledToFit()
                         .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .onTapGesture { zoomed = true }
+                        .onTapGesture { zoom(picture) }
                         .pointerCursor()
                         .help(L("ui.message_row.enlarge_image"))
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .accessibilityLabel(image.alt)
                         .accessibilityAddTraits(.isButton)
-                        .accessibilityAction { zoomed = true }
-                        .sheet(isPresented: $zoomed) { ImageViewer(picture: picture, alt: image.alt) }
+                        .accessibilityAction { zoom(picture) }
                 }
             case .loading:
                 ProgressView()
@@ -481,41 +485,97 @@ struct PreviewImage: View {
     }
 }
 
-/// Full-size view of a message image, fitted to the screen; Escape or a click closes it.
-private struct ImageViewer: View {
-    @Environment(\.dismiss) private var dismiss
+/// Teams' default alt texts say nothing: only a real name is worth showing.
+private func meaningful(_ alt: String) -> Bool {
+    !["image", "images", "image partagée"].contains(alt.lowercased())
+}
+
+/// Who sent a message's images and when, for their full-size view; unset outside a message.
+struct ImageCaption {
+    let sender: String
+    let time: String
+}
+private struct ImageCaptionKey: EnvironmentKey { static let defaultValue: ImageCaption? = nil }
+extension EnvironmentValues {
+    var imageCaption: ImageCaption? {
+        get { self[ImageCaptionKey.self] }
+        set { self[ImageCaptionKey.self] = newValue }
+    }
+}
+
+/// A message image shown full size over the window.
+struct ZoomedImage {
     let picture: NSImage
     let alt: String
+    let caption: ImageCaption?
+}
+
+/// Full-size view of a message image over the dimmed window, as Teams shows it: a bar naming who sent it, with the
+/// actions, above the image fitted to the rest of the window. Escape, the back arrow or a click around the image
+/// closes it.
+struct ImageViewer: View {
+    @Environment(Store.self) private var store
+    let image: ZoomedImage
+    /// Held so typing and Return do not reach the composer hidden underneath.
+    @FocusState private var focused: Bool
+    private var picture: NSImage { image.picture }
+    private var alt: String { image.alt }
+
     var body: some View {
-        let size = fittedSize
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                // Teams' default alt texts say nothing: only a real name is worth a caption.
-                if !["image", "images", "image partagée"].contains(alt.lowercased()) {
-                    Muted(alt, size: 12).lineLimit(1)
+        VStack(spacing: 0) {
+            bar
+            GeometryReader { area in
+                let size = Self.fittedSize(of: picture.size, in: area.size)
+                ZStack {
+                    Color.black.opacity(0.55)
+                        .contentShape(Rectangle())
+                        .onTapGesture(perform: close)
+                        .accessibilityHidden(true)
+                    Image(nsImage: picture)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: size.width, height: size.height)
+                        .accessibilityLabel(alt)
                 }
-                Spacer()
-                IconButton(symbol: "xmark", help: L("ui.message_row.close"), side: 28, glyph: 13) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
+                .frame(width: area.size.width, height: area.size.height)
             }
-            Image(nsImage: picture)
-                .resizable()
-                .interpolation(.high)
-                .scaledToFit()
-                .frame(width: size.width, height: size.height)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .onTapGesture { dismiss() }
-                .accessibilityLabel(alt)
         }
-        .padding(14)
-        .background(Theme.surface)
+        .focusable()
+        .focusEffectDisabled()
+        .focused($focused)
+        .onAppear { focused = true }
     }
 
-    /// Native size, shrunk to 85% of the screen if needed (never enlarged past 2×).
-    private var fittedSize: CGSize {
-        let screen = NSScreen.main?.visibleFrame.size ?? CGSize(width: 1280, height: 800)
-        let bounds = CGSize(width: screen.width * 0.85, height: screen.height * 0.85 - 60)
-        let native = picture.size
+    private var bar: some View {
+        HStack(spacing: 6) {
+            IconButton(symbol: "arrow.left", help: L("ui.message_row.close"), side: 30, glyph: 14, action: close)
+                .keyboardShortcut(.cancelAction)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(image.caption?.sender ?? (meaningful(alt) ? alt : L("ui.message_row.image")))
+                    .font(.figtree(13, .semibold))
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(1)
+                if let subtitle { Muted(subtitle, size: 11).lineLimit(1) }
+            }
+            .padding(.leading, 6)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 56)
+        .background(Theme.surface)
+        .overlay(alignment: .bottom) { Divider().overlay(Theme.border) }
+    }
+
+    /// « image | 10:00 » under the sender, as Teams words it.
+    private var subtitle: String? {
+        image.caption.map { [meaningful(alt) ? alt : L("ui.message_row.image"), $0.time].joined(separator: " | ") }
+    }
+
+    private func close() { store.zoomedImage = nil }
+
+    /// Native size, shrunk to the area below the bar less its side margins if needed (never enlarged past 2×).
+    static func fittedSize(of native: CGSize, in area: CGSize) -> CGSize {
+        let bounds = CGSize(width: max(area.width - 2 * 64, 1), height: max(area.height - 2 * 24, 1))
         guard native.width > 0, native.height > 0 else { return bounds }
         let scale = min(bounds.width / native.width, bounds.height / native.height, 2)
         return CGSize(width: native.width * scale, height: native.height * scale)

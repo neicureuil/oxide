@@ -16,6 +16,11 @@ struct MainView: View {
         return switching && !(built.map(conversations.contains) == true && conversations.contains(shell.nav))
     }
 
+    /// What the content area shows: the image viewer belongs to it and closes when it changes.
+    private var shownContent: [AnyHashable] {
+        [shell.nav, shell.selected, store.search?.open == true, store.newChat == nil]
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             topBar
@@ -54,6 +59,12 @@ struct MainView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Theme.conversation)
             }
+            // Below the top bar, as in Teams.
+            .overlay {
+                if let image = store.zoomedImage { ImageViewer(image: image) }
+            }
+            .onChange(of: shownContent) { store.zoomedImage = nil }
+            .onDisappear { store.zoomedImage = nil }
         }
         .task(id: shell.nav) {
             guard built != nil else {
