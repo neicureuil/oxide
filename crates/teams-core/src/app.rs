@@ -916,6 +916,7 @@ impl App {
             Task(jobs),
             self.refresh_link_preview(),
             self.load_images(),
+            self.check_file_sites(),
             self.load_visible_channels(),
             self.resolve_people(),
             self.load_notification_settings(),

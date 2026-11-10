@@ -52,7 +52,7 @@ const THUMBNAILS: [&str; 20] = [
     "png", "jpg", "jpeg", "gif", "bmp", "heic", "webp", "tif", "tiff", "pdf", "doc", "docx", "xls",
     "xlsx", "ppt", "pptx", "mp4", "mov", "m4v", "vsdx",
 ];
-fn sharepoint(url: &str) -> bool {
+pub(crate) fn sharepoint(url: &str) -> bool {
     url::Url::parse(url).is_ok_and(|u| {
         u.scheme() == "https"
             && u.host_str().is_some_and(|h| {
