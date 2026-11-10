@@ -164,6 +164,8 @@ pub(crate) enum FilesMsg {
     Links(u64, u64, Result<Vec<SharedLink>, String>),
     Listed(u64, u64, Result<Vec<DriveEntry>, String>),
     Changed(u64, u64, Result<(), String>),
+    /// Whether a site (an origin) belongs to another organization.
+    SiteOwner(u64, String, Result<bool, String>),
 }
 
 /// Where a draft attachment went.
@@ -253,6 +255,10 @@ pub(crate) struct FilesState {
     shared_error: Option<String>,
     shared_request: u64,
     browser: Browser,
+    /// Origins asked for their organization, once per session.
+    checked_sites: HashSet<String>,
+    /// Origins of another organization: their files open only in the browser.
+    foreign_sites: HashSet<String>,
 }
 
 impl FilesState {
@@ -331,6 +337,13 @@ fn shared_key(f: &SharedFile) -> String {
         }
     )
 }
+/// The origin a link's file lives on, as the site checks key it.
+fn site_of(link: &str) -> Option<String> {
+    Url::parse(link)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "https" | "http"))
+        .map(|url| url.origin().ascii_serialization())
+}
 fn shared_link(f: &SharedFile) -> Option<String> {
     [&f.share_url, &f.object_url]
         .into_iter()
@@ -374,6 +387,7 @@ impl App {
             | FilesMsg::Links(stamp, _, _)
             | FilesMsg::Listed(stamp, _, _)
             | FilesMsg::Changed(stamp, _, _)
+            | FilesMsg::SiteOwner(stamp, _, _)
                 if stamp != g =>
             {
                 Task::none()
@@ -525,7 +539,67 @@ impl App {
                 }
                 Task::none()
             }
+            // A failed check keeps downloads offered, as before any check.
+            FilesMsg::SiteOwner(_, site, Ok(true)) => {
+                self.files.foreign_sites.insert(site);
+                Task::none()
+            }
+            FilesMsg::SiteOwner(_, _, Ok(false) | Err(_)) => Task::none(),
         }
+    }
+
+    /// Asks each new site of a loaded attachment or shared file which organization owns it.
+    pub(crate) fn check_file_sites(&mut self) -> Task<Msg> {
+        let sites: HashSet<String> = self
+            .file_links()
+            .filter(|link| crate::attachments::sharepoint(link))
+            .filter_map(|link| site_of(&link))
+            .filter(|site| !self.files.checked_sites.contains(site))
+            .collect();
+        // Checked first: any write to `files` republishes every view built from it.
+        if sites.is_empty() {
+            return Task::none();
+        }
+        let Some(client) = self.files_client() else {
+            return Task::none();
+        };
+        self.files.checked_sites.extend(sites.iter().cloned());
+        let g = self.generation;
+        Task::batch(
+            sites
+                .into_iter()
+                .filter_map(|site| Some((Url::parse(&site).ok()?, site)))
+                .map(|(url, site)| {
+                    let client = client.clone();
+                    Task::perform(
+                        async move {
+                            client
+                                .is_foreign_site(&url)
+                                .await
+                                .map_err(|e| e.to_string())
+                        },
+                        move |result| Msg::Files(FilesMsg::SiteOwner(g, site, result)),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+    fn file_links(&self) -> impl Iterator<Item = String> + '_ {
+        let attachments = self
+            .attachments_loaded()
+            .filter(|(file, _)| !file.deleted)
+            .filter_map(|(file, _)| file.link().map(str::to_owned));
+        let shared = self
+            .files
+            .shared_files
+            .iter()
+            .flatten()
+            .filter_map(shared_link);
+        attachments.chain(shared)
+    }
+    /// Whether `link` points into another organization's SharePoint.
+    pub(crate) fn is_foreign_link(&self, link: &str) -> bool {
+        site_of(link).is_some_and(|site| self.files.foreign_sites.contains(&site))
     }
 
     fn pending_mut(&mut self, id: &str) -> Option<&mut Pending> {
@@ -1382,7 +1456,8 @@ impl App {
                                 tf!("core.files.shared_by", sender_name = f.sender_name)
                             },
                             progress: self.transfer_progress(&key),
-                            can_download: true,
+                            can_download: shared_link(f)
+                                .is_none_or(|link| !self.is_foreign_link(&link)),
                             thumbnail: None,
                             date: date_short(&f.shared_at),
                             is_link: false,
@@ -1700,6 +1775,35 @@ mod tests {
         let path = dir.join(name);
         std::fs::write(&path, text).unwrap();
         path.to_string_lossy().into_owned()
+    }
+
+    #[tokio::test]
+    async fn a_file_of_another_organization_offers_no_download() {
+        let mut h = Harness::demo();
+        h.until("workspace", |a| !a.chats.is_empty()).await;
+        h.send(Msg::Select(Selection::Chat(
+            "19:projet-rust@thread.v2".into(),
+        )));
+        h.until("feed", |a| !a.conv.messages().is_empty()).await;
+        let file = h
+            .app
+            .attachments_loaded()
+            .map(|(f, _)| f)
+            .find(|f| f.name == "Feuille de route.txt")
+            .expect("demo attachment");
+        assert!(
+            h.app.files.checked_sites.is_empty(),
+            "only SharePoint sites are asked"
+        );
+        assert!(h.app.file_view(&file).can_download);
+        let site = Url::parse(file.link().unwrap())
+            .unwrap()
+            .origin()
+            .ascii_serialization();
+
+        let generation = h.app.generation();
+        h.send(Msg::Files(FilesMsg::SiteOwner(generation, site, Ok(true))));
+        assert!(!h.app.file_view(&file).can_download);
     }
 
     #[tokio::test]

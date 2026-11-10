@@ -920,7 +920,8 @@ impl App {
         let key = file.key();
         FileView {
             progress: self.transfer_progress(&key),
-            can_download: !file.deleted && file.link().is_some(),
+            can_download: !file.deleted
+                && file.link().is_some_and(|link| !self.is_foreign_link(link)),
             thumbnail: file
                 .thumbnail
                 .as_ref()
