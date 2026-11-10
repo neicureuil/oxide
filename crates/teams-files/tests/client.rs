@@ -352,6 +352,32 @@ async fn a_token_refused_by_another_organizations_site_is_told_apart() {
 }
 
 #[tokio::test]
+async fn a_site_tells_its_organization_to_an_empty_bearer() {
+    let server = MockServer::start().await;
+    for (realm, foreign) in [("OTHER-TENANT", true), ("HOME-TENANT", false)] {
+        server.reset().await;
+        Mock::given(method("GET"))
+            .and(path("/_vti_bin/client.svc"))
+            .and(header("authorization", "Bearer"))
+            .respond_with(ResponseTemplate::new(401).insert_header(
+                "www-authenticate",
+                format!(r#"Bearer realm="{realm}",client_id="x""#),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            client(&server)
+                .is_foreign_site(&site(&server))
+                .await
+                .unwrap(),
+            foreign,
+            "{realm}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn substrate_lists_use_the_documented_filters_and_headers() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

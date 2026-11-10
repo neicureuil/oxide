@@ -302,6 +302,33 @@ impl<A: Authenticator> FilesClient<A> {
             .is_some_and(|(site, home)| !site.eq_ignore_ascii_case(&home))
     }
 
+    /// Whether `site` belongs to another organization than the user's: SharePoint names its tenant in the challenge to an empty bearer.
+    pub async fn is_foreign_site(&self, site: &Url) -> Result<bool, Error> {
+        let url = origin(site)?
+            .join("_vti_bin/client.svc")
+            .map_err(|_| Error::Invalid(t("files.lib.invalid_sharepoint_url").into()))?;
+        let headers = || {
+            let mut map = HeaderMap::new();
+            map.insert("authorization", HeaderValue::from_static("Bearer"));
+            map
+        };
+        let target = || Ok::<_, Error>(url.clone());
+        let request = net::Exchange::<(), _>::new(Signer::Anonymous, Method::GET, &target)
+            .headers(&headers)
+            .timeout(Some(TIMEOUT));
+        let host = url.host_str().unwrap_or("-");
+        let response = net::exchange(&self.http, self.auth.as_ref(), request)
+            .await
+            .inspect_err(|e| FILES_LOG.record(&format!("site check host={host} error={e}")))?;
+        if realm(response.headers()).is_none() {
+            FILES_LOG.record(&format!(
+                "site check host={host} status={} without realm",
+                response.status().as_u16()
+            ));
+        }
+        Ok(self.is_foreign(response.headers()))
+    }
+
     pub(crate) async fn json(
         &self,
         auth: Auth,
