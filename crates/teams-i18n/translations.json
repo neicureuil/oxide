@@ -4467,6 +4467,10 @@
     "fr": "{filesCount} fichiers",
     "en": "{filesCount} files"
   },
+  "ui.message_row.fit_image": {
+    "fr": "Ajuster à la fenêtre",
+    "en": "Fit to window"
+  },
   "ui.message_row.image": {
     "fr": "image",
     "en": "image"
@@ -4530,6 +4534,14 @@
   "ui.message_row.you": {
     "fr": "Vous",
     "en": "You"
+  },
+  "ui.message_row.zoom_in": {
+    "fr": "Zoom avant",
+    "en": "Zoom in"
+  },
+  "ui.message_row.zoom_out": {
+    "fr": "Zoom arrière",
+    "en": "Zoom out"
   },
   "ui.notification_router.accept": {
     "fr": "Accepter",

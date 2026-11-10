@@ -250,7 +250,8 @@ struct FeedTable: NSViewRepresentable {
             })
             wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self, weak scroll] event in
                 let routed = MainActor.assumeIsolated {
-                    guard let self, let scroll else { return false }
+                    // The image viewer over the feed takes the wheel.
+                    guard let self, let scroll, self.store?.zoomedImage == nil else { return false }
                     self.noteGesture(event, on: scroll)
                     return self.routeWheel(event, to: scroll)
                 }

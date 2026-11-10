@@ -25,4 +25,20 @@ final class ImageViewerTests: XCTestCase {
         XCTAssertEqual(ImageViewer.fileName(for: "Image"), "Image.png")
         XCTAssertEqual(ImageViewer.fileName(for: "image partagée"), "Image.png")
     }
+
+    /// The point under the pointer stays under it while zooming in.
+    func testZoomingInKeepsTheAnchorInPlace() {
+        let result = ImageViewer.zoomed(to: 2, from: 1, offset: .zero, anchor: CGSize(width: 100, height: -50))
+        XCTAssertEqual(result.zoom, 2)
+        XCTAssertEqual(result.offset, CGSize(width: -100, height: 50))
+        let further = ImageViewer.zoomed(to: 4, from: 2, offset: result.offset, anchor: CGSize(width: 100, height: -50))
+        XCTAssertEqual(further.offset, CGSize(width: -300, height: 150))
+    }
+
+    func testTheZoomStaysWithinItsBoundsAndRecentresWhenNoLargerThanFitted() {
+        XCTAssertEqual(ImageViewer.zoomed(to: 20, from: 1, offset: .zero, anchor: .zero).zoom, 8)
+        let out = ImageViewer.zoomed(to: 0.1, from: 2, offset: CGSize(width: 40, height: 40), anchor: CGSize(width: 10, height: 10))
+        XCTAssertEqual(out.zoom, 0.25)
+        XCTAssertEqual(out.offset, .zero)
+    }
 }

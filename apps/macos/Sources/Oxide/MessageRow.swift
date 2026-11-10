@@ -527,6 +527,19 @@ struct ImageViewer: View {
     let image: ZoomedImage
     /// Held so typing and Return do not reach the composer hidden underneath.
     @FocusState private var focused: Bool
+    /// Scale over the fitted size, around the image's centre.
+    @State private var zoom: CGFloat = 1
+    @State private var zoomBeforePinch: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var offsetBeforeDrag: CGSize = .zero
+    /// The whole viewer and the image's area below its bar, in window coordinates, for the wheel.
+    @State private var frame: CGRect = .zero
+    @State private var area: CGRect = .zero
+    @State private var wheel: Any?
+    /// Opened by a click or VoiceOver action in it, so the key window when it appears.
+    @State private var window: NSWindow?
+    private static let zooms: ClosedRange<CGFloat> = 0.25...8
+    private static let step: CGFloat = 1.5
     private var picture: NSImage { image.picture }
     private var alt: String { image.alt }
 
@@ -544,6 +557,9 @@ struct ImageViewer: View {
                         .resizable()
                         .interpolation(.high)
                         .frame(width: size.width, height: size.height)
+                        .scaleEffect(zoom)
+                        .offset(offset)
+                        .gesture(pan, including: zoom > 1 ? .all : .none)
                         .contextMenu {
                             Button(L("ui.message_row.copy_image"), action: copy)
                             if image.savable { Button(L("ui.message_row.save_image"), action: save) }
@@ -551,12 +567,24 @@ struct ImageViewer: View {
                         .accessibilityLabel(alt)
                 }
                 .frame(width: area.size.width, height: area.size.height)
+                .clipped()
+                .gesture(pinch)
             }
+            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { area = $0 }
         }
+        .background {
+            Button("") { setZoom(1) }.keyboardShortcut("0").hidden()
+        }
+        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame = $0 }
         .focusable()
         .focusEffectDisabled()
         .focused($focused)
-        .onAppear { focused = true }
+        .onAppear {
+            focused = true
+            window = NSApp.keyWindow
+            wheel = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel, handler: zoom(by:))
+        }
+        .onDisappear { if let wheel { NSEvent.removeMonitor(wheel) } }
     }
 
     private var bar: some View {
@@ -572,6 +600,20 @@ struct ImageViewer: View {
             }
             .padding(.leading, 6)
             Spacer()
+            if zoom != 1 || offset != .zero {
+                IconButton(symbol: "scope", help: L("ui.message_row.fit_image"), side: 30, glyph: 14) { setZoom(1) }
+            }
+            IconButton(symbol: "minus.magnifyingglass", help: L("ui.message_row.zoom_out"), side: 30, glyph: 14) {
+                setZoom(zoom / Self.step)
+            }
+                .keyboardShortcut("-")
+                .disabled(zoom <= Self.zooms.lowerBound)
+            IconButton(symbol: "plus.magnifyingglass", help: L("ui.message_row.zoom_in"), side: 30, glyph: 14) {
+                setZoom(zoom * Self.step)
+            }
+                .keyboardShortcut("=")
+                .disabled(zoom >= Self.zooms.upperBound)
+            Divider().frame(height: 18).padding(.horizontal, 4)
             IconButton(symbol: "doc.on.doc", help: L("ui.message_row.copy_image"), side: 30, glyph: 14, action: copy)
             if image.savable {
                 IconButton(symbol: "arrow.down.to.line", help: L("ui.message_row.save_image"), side: 30, glyph: 14, action: save)
@@ -588,7 +630,71 @@ struct ImageViewer: View {
         image.caption.map { [meaningful(alt) ? alt : L("ui.message_row.image"), $0.time].joined(separator: " | ") }
     }
 
+    private var pan: some Gesture {
+        DragGesture()
+            .onChanged { drag in
+                offset = CGSize(
+                    width: offsetBeforeDrag.width + drag.translation.width,
+                    height: offsetBeforeDrag.height + drag.translation.height
+                )
+            }
+            .onEnded { _ in offsetBeforeDrag = offset }
+    }
+
+    private var pinch: some Gesture {
+        MagnifyGesture()
+            .onChanged { pinch in
+                apply(zoom: zoomBeforePinch * pinch.magnification, from: zoomBeforePinch, offset: offsetBeforeDrag)
+            }
+            .onEnded { _ in settle() }
+    }
+
     private func close() { store.zoomedImage = nil }
+
+    /// Back to the fitted size and centred at 1; otherwise the visible centre stays put.
+    private func setZoom(_ value: CGFloat) {
+        if value == 1 {
+            zoom = 1
+            offset = .zero
+        } else {
+            apply(zoom: value, from: zoom, offset: offset)
+        }
+        settle()
+    }
+
+    /// Scales around `anchor`, a point measured from the area's centre that stays put on screen.
+    private func apply(zoom value: CGFloat, from previous: CGFloat, offset start: CGSize, anchor: CGSize = .zero) {
+        (zoom, offset) = Self.zoomed(to: value, from: previous, offset: start, anchor: anchor)
+    }
+
+    /// `value` within `zooms`, and the offset that keeps `anchor` in place; centred once no larger than fitted.
+    static func zoomed(to value: CGFloat, from previous: CGFloat, offset start: CGSize, anchor: CGSize) -> (zoom: CGFloat, offset: CGSize) {
+        let next = min(max(value, zooms.lowerBound), zooms.upperBound)
+        guard next > 1 else { return (next, .zero) }
+        let ratio = next / previous
+        return (next, CGSize(
+            width: anchor.width - ratio * (anchor.width - start.width),
+            height: anchor.height - ratio * (anchor.height - start.height)
+        ))
+    }
+
+    /// The wheel zooms around the pointer over the image's area, and scrolls nothing under the viewer.
+    private func zoom(by event: NSEvent) -> NSEvent? {
+        guard let window, event.window === window, let content = window.contentView else { return event }
+        let point = CGPoint(x: event.locationInWindow.x, y: content.bounds.height - event.locationInWindow.y)
+        guard frame.contains(point) else { return event }
+        guard area.contains(point), event.scrollingDeltaY != 0 else { return nil }
+        let speed: CGFloat = event.hasPreciseScrollingDeltas ? 0.01 : 0.1
+        let anchor = CGSize(width: point.x - area.midX, height: point.y - area.midY)
+        apply(zoom: zoom * exp(event.scrollingDeltaY * speed), from: zoom, offset: offset, anchor: anchor)
+        settle()
+        return nil
+    }
+
+    private func settle() {
+        zoomBeforePinch = zoom
+        offsetBeforeDrag = offset
+    }
 
     private func copy() {
         NSPasteboard.copy(picture)
