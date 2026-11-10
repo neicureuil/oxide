@@ -2,7 +2,7 @@ use http::{HeaderMap, HeaderValue};
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use teams_auth::{AuthError, Authenticator, Service};
+use teams_auth::{AuthError, Authenticator, CallingContext, Service};
 use teams_files::{
     CHUNK_SIZE, Destination, DriveEntry, Error, FilesClient, SpoError, share_id,
 };
@@ -38,6 +38,12 @@ impl Authenticator for Auth {
     async fn on_resource_unauthorized(&self, _url: &Url) -> bool {
         self.refreshes.fetch_add(1, Ordering::SeqCst);
         true
+    }
+    fn calling_context(&self) -> Option<CallingContext> {
+        Some(CallingContext {
+            tenant_id: Some("home-tenant".into()),
+            ..Default::default()
+        })
     }
 }
 fn client(server: &MockServer) -> FilesClient<Auth> {
@@ -321,6 +327,28 @@ async fn redeem_retries_with_a_renewed_token_then_falls_back_to_the_item() {
     assert_eq!(size, 4);
     assert_eq!(std::fs::read(&dest).unwrap(), b"data");
     assert!(!dest.with_file_name("a.docx.part").exists());
+}
+
+#[tokio::test]
+async fn a_token_refused_by_another_organizations_site_is_told_apart() {
+    let server = MockServer::start().await;
+    let link = format!("{}/:w:/g/personal/a/E1", server.uri());
+    for (realm, expected) in [
+        ("OTHER-TENANT", SpoError::ForeignTenant),
+        ("HOME-TENANT", SpoError::InvalidAudience),
+    ] {
+        server.reset().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .insert_header("www-authenticate", format!(r#"Bearer realm="{realm}",client_id="x""#))
+                    .set_body_json(json!({"error": {"code": "invalidAudienceUri", "message": "Invalid audience Uri"}})),
+            )
+            .mount(&server)
+            .await;
+        let error = client(&server).redeem(&link, None).await.unwrap_err();
+        assert_eq!(error.spo(), Some(&expected), "{realm}");
+    }
 }
 
 #[tokio::test]
