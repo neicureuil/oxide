@@ -4423,6 +4423,10 @@
     "fr": "Fermer",
     "en": "Close"
   },
+  "ui.message_row.copy_image": {
+    "fr": "Copier l’image",
+    "en": "Copy image"
+  },
   "ui.message_row.copy_text": {
     "fr": "Copier le texte",
     "en": "Copy text"

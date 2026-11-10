@@ -497,6 +497,10 @@ extension NSPasteboard {
         general.clearContents()
         general.setString(text, forType: .string)
     }
+    static func copy(_ image: NSImage) {
+        general.clearContents()
+        general.writeObjects([image])
+    }
 }
 
 extension Notification.Name {

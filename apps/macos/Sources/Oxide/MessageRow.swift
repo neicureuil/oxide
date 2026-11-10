@@ -535,6 +535,9 @@ struct ImageViewer: View {
                         .resizable()
                         .interpolation(.high)
                         .frame(width: size.width, height: size.height)
+                        .contextMenu {
+                            Button(L("ui.message_row.copy_image"), action: copy)
+                        }
                         .accessibilityLabel(alt)
                 }
                 .frame(width: area.size.width, height: area.size.height)
@@ -559,6 +562,7 @@ struct ImageViewer: View {
             }
             .padding(.leading, 6)
             Spacer()
+            IconButton(symbol: "doc.on.doc", help: L("ui.message_row.copy_image"), side: 30, glyph: 14, action: copy)
         }
         .padding(.horizontal, 12)
         .frame(height: 56)
@@ -572,6 +576,10 @@ struct ImageViewer: View {
     }
 
     private func close() { store.zoomedImage = nil }
+
+    private func copy() {
+        NSPasteboard.copy(picture)
+    }
 
     /// Native size, shrunk to the area below the bar less its side margins if needed (never enlarged past 2×).
     static func fittedSize(of native: CGSize, in area: CGSize) -> CGSize {
