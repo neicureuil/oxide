@@ -1811,6 +1811,10 @@
     "fr": "Service de fichiers indisponible (HTTP {status}).",
     "en": "File service unavailable (HTTP {status})."
   },
+  "files.lib.foreign_tenant": {
+    "fr": "Ce fichier appartient à une autre organisation, à laquelle Oxide n’a pas accès. Utilisez Ouvrir pour l’afficher dans le navigateur.",
+    "en": "This file belongs to another organization, which Oxide cannot access. Use Open to view it in the browser."
+  },
   "files.lib.invalid_header": {
     "fr": "En-tête invalide.",
     "en": "Invalid header."

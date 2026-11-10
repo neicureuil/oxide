@@ -42,6 +42,8 @@ pub enum SpoError {
     AlreadyInProgress,
     FolderMissing,
     InvalidAudience,
+    /// [`Self::InvalidAudience`] from a site whose challenge names another tenant than the user's.
+    ForeignTenant,
     Other(String),
 }
 impl SpoError {
@@ -107,6 +109,7 @@ fn http_message(status: u16, code: &Option<SpoError>) -> String {
         Some(SpoError::AccessDenied) => "files.lib.access_denied",
         Some(SpoError::AlreadyInProgress) => "files.lib.upload_in_progress",
         Some(SpoError::InvalidAudience) => "files.lib.site_moved",
+        Some(SpoError::ForeignTenant) => "files.lib.foreign_tenant",
         _ if status == 401 || status == 403 => "files.lib.access_denied",
         _ if status == 404 => "files.lib.not_found",
         _ => return tf!("files.lib.file_service_unavailable_http", status = status),
@@ -264,10 +267,39 @@ impl<A: Authenticator> FilesClient<A> {
             .map_err(|e| Error::Transport(e.without_url().to_string()))?
             .to_vec();
         if let Some(headers) = refused {
-            record_refusal(&url, status, &headers, &body);
-            return Err(error_of(status, &body));
+            return Err(self.refused(&url, status, &headers, &body));
         }
         Ok(Response { body })
+    }
+
+    /// Logs a refused request and reads its error, telling a site of another organization apart.
+    pub(crate) fn refused(
+        &self,
+        url: &Url,
+        status: u16,
+        headers: &HeaderMap,
+        body: &[u8],
+    ) -> Error {
+        record_refusal(url, status, headers, body);
+        match error_of(status, body) {
+            Error::Http {
+                status,
+                code: Some(SpoError::InvalidAudience),
+                redirect,
+            } if self.is_foreign(headers) => Error::Http {
+                status,
+                code: Some(SpoError::ForeignTenant),
+                redirect,
+            },
+            error => error,
+        }
+    }
+    /// Whether a refusal's challenge names another tenant than the signed-in user's.
+    fn is_foreign(&self, headers: &HeaderMap) -> bool {
+        let home = self.auth.calling_context().and_then(|c| c.tenant_id);
+        realm(headers)
+            .zip(home)
+            .is_some_and(|(site, home)| !site.eq_ignore_ascii_case(&home))
     }
 
     pub(crate) async fn json(
@@ -296,7 +328,7 @@ fn raw_code(value: &Value) -> Option<&str> {
 }
 
 /// Logs a refused request to `files.log`.
-pub(crate) fn record_refusal(url: &Url, status: u16, headers: &HeaderMap, body: &[u8]) {
+fn record_refusal(url: &Url, status: u16, headers: &HeaderMap, body: &[u8]) {
     FILES_LOG.record(&refusal_line(url, status, headers, body));
 }
 
@@ -320,6 +352,13 @@ fn refusal_line(url: &Url, status: u16, headers: &HeaderMap, body: &[u8]) -> Str
     )
 }
 
+/// The tenant id a SharePoint challenge names: `Bearer realm="{tenant}",…`.
+fn realm(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get("www-authenticate")?.to_str().ok()?;
+    let (_, rest) = value.split_once("realm=\"")?;
+    rest.split('"').next().filter(|realm| !realm.is_empty())
+}
+
 /// The two segments after `_api`, without arguments (`v2.0/shares`, `web/GetFileById`), else `-`.
 fn api_route(url: &Url) -> String {
     let mut segments = url.path_segments().into_iter().flatten();
@@ -334,7 +373,7 @@ fn api_route(url: &Url) -> String {
 }
 
 /// SharePoint error code and multi-geo redirect.
-pub(crate) fn error_of(status: u16, body: &[u8]) -> Error {
+fn error_of(status: u16, body: &[u8]) -> Error {
     let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
     let code = raw_code(&value).map(SpoError::from_code);
     let redirect = value

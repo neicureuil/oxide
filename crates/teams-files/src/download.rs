@@ -175,8 +175,8 @@ impl<A: Authenticator> FilesClient<A> {
         if !(200..300).contains(&status) {
             let headers = response.headers().clone();
             let body = response.bytes().await.unwrap_or_default();
-            crate::record_refusal(&url.lock().unwrap(), status, &headers, &body);
-            return Err(crate::error_of(status, &body));
+            let url = url.lock().unwrap().clone();
+            return Err(self.refused(&url, status, &headers, &body));
         }
         let total = response.content_length();
         let temporary = part(dest);
