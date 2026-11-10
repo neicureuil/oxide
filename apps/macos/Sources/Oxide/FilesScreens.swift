@@ -133,7 +133,7 @@ struct FileCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let thumbnail = file.thumbnail, case .ready = thumbnail.status {
-                PreviewImage(image: thumbnail, height: 150)
+                PreviewImage(image: thumbnail, height: 150, savable: false)
                     .padding([.horizontal, .top], 8)
             }
             HStack(spacing: 12) {

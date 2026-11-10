@@ -17,4 +17,12 @@ final class ImageViewerTests: XCTestCase {
     func testAnImageWithoutSizeTakesTheWholeBox() {
         XCTAssertEqual(ImageViewer.fittedSize(of: .zero, in: area), CGSize(width: 1000, height: 500))
     }
+
+    /// Teams names a pasted file after it; its own placeholder alt texts give a generic name.
+    func testTheSavedFileIsNamedAfterTheAltText() {
+        XCTAssertEqual(ImageViewer.fileName(for: "Capture.jpg"), "Capture.png")
+        XCTAssertEqual(ImageViewer.fileName(for: "a/b:c.png"), "a-b-c.png")
+        XCTAssertEqual(ImageViewer.fileName(for: "Image"), "Image.png")
+        XCTAssertEqual(ImageViewer.fileName(for: "image partagée"), "Image.png")
+    }
 }

@@ -387,6 +387,7 @@ struct PreviewImage: View {
     @Environment(\.imageCaption) private var caption
     let image: ImageView
     var height: CGFloat = 250
+    var savable = true
 
     static let maxSize = CGSize(width: 620, height: 480)
     /// The declared size, scaled down to fit `maxSize`.
@@ -434,7 +435,7 @@ struct PreviewImage: View {
         }
     }
     private func zoom(_ picture: NSImage) {
-        store.zoomedImage = ZoomedImage(picture: picture, alt: image.alt, caption: caption)
+        store.zoomedImage = ZoomedImage(picture: picture, alt: image.alt, caption: caption, savable: savable)
     }
     /// The alt text is kept for VoiceOver only: Teams fills it with « image » or a file name.
     private var box: some View {
@@ -490,6 +491,12 @@ private func meaningful(_ alt: String) -> Bool {
     !["image", "images", "image partagée"].contains(alt.lowercased())
 }
 
+private extension NSImage {
+    var pngData: Data? {
+        tiffRepresentation.flatMap(NSBitmapImageRep.init(data:))?.representation(using: .png, properties: [:])
+    }
+}
+
 /// Who sent a message's images and when, for their full-size view; unset outside a message.
 struct ImageCaption {
     let sender: String
@@ -508,6 +515,8 @@ struct ZoomedImage {
     let picture: NSImage
     let alt: String
     let caption: ImageCaption?
+    /// False for a file's thumbnail, which is not the file.
+    let savable: Bool
 }
 
 /// Full-size view of a message image over the dimmed window, as Teams shows it: a bar naming who sent it, with the
@@ -537,6 +546,7 @@ struct ImageViewer: View {
                         .frame(width: size.width, height: size.height)
                         .contextMenu {
                             Button(L("ui.message_row.copy_image"), action: copy)
+                            if image.savable { Button(L("ui.message_row.save_image"), action: save) }
                         }
                         .accessibilityLabel(alt)
                 }
@@ -563,6 +573,9 @@ struct ImageViewer: View {
             .padding(.leading, 6)
             Spacer()
             IconButton(symbol: "doc.on.doc", help: L("ui.message_row.copy_image"), side: 30, glyph: 14, action: copy)
+            if image.savable {
+                IconButton(symbol: "arrow.down.to.line", help: L("ui.message_row.save_image"), side: 30, glyph: 14, action: save)
+            }
         }
         .padding(.horizontal, 12)
         .frame(height: 56)
@@ -579,6 +592,25 @@ struct ImageViewer: View {
 
     private func copy() {
         NSPasteboard.copy(picture)
+    }
+
+    /// Saved as PNG: the viewer holds the decoded image, not the bytes Teams served.
+    private func save() {
+        guard let path = FilePanels.saveLocation(for: Self.fileName(for: alt)) else { return }
+        do {
+            guard let png = picture.pngData else { throw CocoaError(.fileWriteUnknown) }
+            try png.write(to: URL(fileURLWithPath: path), options: .atomic)
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+    }
+
+    /// Named after the alt text Teams gives a pasted file, less its extension and the path separators a name cannot hold.
+    static func fileName(for alt: String) -> String {
+        let caption = (alt as NSString).deletingPathExtension
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        return (meaningful(alt) && !caption.isEmpty ? caption : "Image") + ".png"
     }
 
     /// Native size, shrunk to the area below the bar less its side margins if needed (never enlarged past 2×).

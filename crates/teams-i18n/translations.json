@@ -4507,6 +4507,10 @@
     "fr": "Enregistrer",
     "en": "Save"
   },
+  "ui.message_row.save_image": {
+    "fr": "Enregistrer l’image…",
+    "en": "Save image…"
+  },
   "ui.message_row.sending_reaction": {
     "fr": "réaction en cours d’envoi",
     "en": "sending reaction"
