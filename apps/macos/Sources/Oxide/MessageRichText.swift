@@ -292,6 +292,17 @@ final class MessageTextView: NSTextView {
 
     override func layout() {
         super.layout()
+        matchContainerToBounds()
+    }
+
+    /// `fit` leaves the container at the width it was asked about, often the whole feed, while the view hugs its text:
+    /// a quote's box, as wide as the container, would draw past the bubble (views don't clip to their bounds).
+    override func viewWillDraw() {
+        matchContainerToBounds()
+        super.viewWillDraw()
+    }
+
+    private func matchContainerToBounds() {
         if let container = textContainer, container.size.width != bounds.width, bounds.width > 0 {
             container.size = NSSize(width: bounds.width, height: .greatestFiniteMagnitude)
         }
