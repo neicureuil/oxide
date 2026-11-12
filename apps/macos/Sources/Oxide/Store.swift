@@ -35,6 +35,8 @@ final class Store {
     private(set) var conversation: ConversationView?
     /// « Alice est en train d’écrire… » under the open chat.
     private(set) var typing: String?
+    /// The message image shown full size over the window, if any.
+    var zoomedImage: ZoomedImage?
     private(set) var chatFeed = FeedRows()
     private(set) var postFeed = FeedRows()
     private(set) var threadFeed = FeedRows()
@@ -494,6 +496,10 @@ extension NSPasteboard {
     static func copy(_ text: String) {
         general.clearContents()
         general.setString(text, forType: .string)
+    }
+    static func copy(_ image: NSImage) {
+        general.clearContents()
+        general.writeObjects([image])
     }
 }
 

@@ -4423,6 +4423,10 @@
     "fr": "Fermer",
     "en": "Close"
   },
+  "ui.message_row.copy_image": {
+    "fr": "Copier l’image",
+    "en": "Copy image"
+  },
   "ui.message_row.copy_text": {
     "fr": "Copier le texte",
     "en": "Copy text"
@@ -4463,6 +4467,14 @@
     "fr": "{filesCount} fichiers",
     "en": "{filesCount} files"
   },
+  "ui.message_row.fit_image": {
+    "fr": "Ajuster à la fenêtre",
+    "en": "Fit to window"
+  },
+  "ui.message_row.image": {
+    "fr": "image",
+    "en": "image"
+  },
   "ui.message_row.images": {
     "fr": "{imagesCount} images",
     "en": "{imagesCount} images"
@@ -4499,6 +4511,10 @@
     "fr": "Enregistrer",
     "en": "Save"
   },
+  "ui.message_row.save_image": {
+    "fr": "Enregistrer l’image…",
+    "en": "Save image…"
+  },
   "ui.message_row.sending_reaction": {
     "fr": "réaction en cours d’envoi",
     "en": "sending reaction"
@@ -4518,6 +4534,14 @@
   "ui.message_row.you": {
     "fr": "Vous",
     "en": "You"
+  },
+  "ui.message_row.zoom_in": {
+    "fr": "Zoom avant",
+    "en": "Zoom in"
+  },
+  "ui.message_row.zoom_out": {
+    "fr": "Zoom arrière",
+    "en": "Zoom out"
   },
   "ui.notification_router.accept": {
     "fr": "Accepter",
