@@ -819,7 +819,8 @@ impl App {
                     all_new_posts: all_new_posts.into(),
                     include_replies,
                     channel_mentions: channel_mentions.into(),
-                };
+                }
+                .normalized();
                 Task::batch([
                     self.save_channel_settings(&team, &channel, settings),
                     self.save_follow_all(&channel, follow_all_threads),
