@@ -44,6 +44,14 @@ impl ChannelNotificationSettings {
         }
     }
 
+    /// Settings the service accepts: it rejects `includeReplies: true` with `allNewPosts: Off` (400 Bad Request).
+    pub fn normalized(self) -> Self {
+        Self {
+            include_replies: self.include_replies && self.all_new_posts != NssChoice::Off,
+            ..self
+        }
+    }
+
     /// "Turn off" of the activity context menu.
     pub const OFF: Self = Self {
         all_new_posts: NssChoice::Off,
@@ -355,6 +363,21 @@ mod tests {
                 channel_mentions: NssChoice::BannerAndFeed,
             }
         );
+    }
+
+    #[test]
+    fn replies_drop_when_new_posts_are_off() {
+        let settings = ChannelNotificationSettings {
+            all_new_posts: NssChoice::Off,
+            include_replies: true,
+            channel_mentions: NssChoice::BannerAndFeed,
+        };
+        assert!(!settings.normalized().include_replies);
+        let feed = ChannelNotificationSettings {
+            all_new_posts: NssChoice::Feed,
+            ..settings
+        };
+        assert!(feed.normalized().include_replies);
     }
 
     #[test]

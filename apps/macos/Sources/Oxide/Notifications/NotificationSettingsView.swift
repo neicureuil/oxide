@@ -421,7 +421,10 @@ struct NotificationEditorSheet: View {
     private var channelForm: some View {
         VStack(alignment: .leading, spacing: 12) {
             Picker(L("ui.notification_settings_view.all_new_posts"), selection: bind(\.posts)) { channelChoices }
-            Toggle(isOn: bind(\.replies)) { Text(L("ui.notification_settings_view.include_all_replies")).font(.figtree(13)) }
+            Toggle(isOn: Binding(
+                get: { draft?.posts != .off && bind(\.replies).wrappedValue },
+                set: { bind(\.replies).wrappedValue = $0 }
+            )) { Text(L("ui.notification_settings_view.include_all_replies")).font(.figtree(13)) }
                 .toggleStyle(.switch)
                 .disabled(draft?.posts == .off)
             Picker(L("ui.notification_settings_view.channel_mentions"), selection: bind(\.mentions)) { channelChoices }
