@@ -1,6 +1,6 @@
 cask "oxide" do
-  version "0.10.0"
-  sha256 "400fd0498ec3812b2d09b9b42e6f6e3ef28653282a2c97a5f33a247fc08bd47a"
+  version "0.11.0"
+  sha256 "cd8a43bb69dc99c64bfbb610ca568e86d318fa6d302c3a415e851be57c98c71e"
 
   url "https://github.com/neicureuil/oxide/releases/download/v#{version}/Oxide-#{version}.zip"
   name "Oxide"
