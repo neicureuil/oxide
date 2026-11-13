@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/teams-auth", "crates/teams-chat", "crates/teams-calendar", "crates/teams-files", "crates/teams-calling", "crates/teams-realtime", "crates/teams-core", "crates/teams-probe", "crates/teams-i18n"]
 
 [workspace.package]
-version = "0.10.0"
+version = "0.11.0"
 edition = "2024"
 rust-version = "1.85"
 license = "GPL-3.0-or-later"
