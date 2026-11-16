@@ -962,9 +962,21 @@ impl App {
                     .and_then(Value::as_str)
                     .map(str::to_owned)
                     .or_else(|| event.resource_link.rsplit('/').next().map(str::to_owned));
-                if let Some(id) = id {
-                    self.notifications.requested.remove(&id);
-                    self.notifications.conversations.remove(&id);
+                // A `ConversationUpdate` carries the whole conversation, its properties included,
+                // and comes with every new message: dropping them made the next banner wait for a fetch.
+                let properties = (event.resource_type == ResourceType::ConversationUpdate)
+                    .then(|| event.resource.get("properties").and_then(Value::as_object))
+                    .flatten();
+                match (id, properties) {
+                    (Some(id), Some(properties)) => {
+                        let settings = ConversationSettings::from_properties(properties);
+                        self.notifications.conversations.insert(id, settings);
+                    }
+                    (Some(id), None) => {
+                        self.notifications.requested.remove(&id);
+                        self.notifications.conversations.remove(&id);
+                    }
+                    (None, _) => {}
                 }
                 Task::none()
             }
@@ -983,6 +995,8 @@ impl App {
         self.stop_typing(&conv, message.sender_mri());
         if is_channel_id(&conv) {
             self.channel_message(&conv, &message);
+        } else {
+            self.chat_message(&conv, &message);
         }
         // Keep the screen current: the push replaces waiting for the next poll.
         let refresh = if conv == activity::FEED {
@@ -1023,6 +1037,32 @@ impl App {
             if newer {
                 channel.set_last_message(message);
             }
+        }
+    }
+
+    /// A chat message from someone else makes the chat unread at once: the chat list reloaded
+    /// right after still predates it, and the badge waited for a later reload.
+    fn chat_message(&mut self, conv: &str, message: &Message) {
+        let kind = message.messagetype.as_str();
+        if !(kind == "Text" || kind.starts_with("RichText")) || message.is_deleted() {
+            return;
+        }
+        let me = self.me.as_str();
+        let from_me = !me.is_empty() && message.sender_mri().eq_ignore_ascii_case(me);
+        // The open chat is marked read by the feed load this push triggers.
+        let open = self.selected.as_ref().is_some_and(|s| s.id() == conv)
+            && !self.kept_unread.contains(conv);
+        let Some(i) = self.chats.iter().position(|c| c.id == conv) else {
+            return;
+        };
+        let mut chat = self.chats[i].clone();
+        conversations::update_last_message(&mut chat, message);
+        let latest = chat.last_message.as_ref().is_some_and(|m| m.id == message.id);
+        if latest && !from_me && !open {
+            chat.is_read = Some(false);
+        }
+        if chat != self.chats[i] {
+            self.chats[i] = chat;
         }
     }
 
@@ -2249,6 +2289,62 @@ mod tests {
         }));
         drive(&mut app, task).await;
         assert!(app.channel_muted(&channel));
+    }
+
+    #[tokio::test]
+    async fn a_pushed_message_makes_its_chat_unread_before_the_chat_list_catches_up() {
+        let mut app = demo().await;
+        let other = app
+            .chats
+            .iter()
+            .map(|c| c.id.clone())
+            .find(|id| app.selected.as_ref().is_none_or(|s| s.id() != id))
+            .unwrap();
+        let i = app.chats.iter().position(|c| c.id == other).unwrap();
+        app.chats[i].is_read = Some(true);
+        let unread = |app: &App| app.chats.iter().filter(|c| c.is_unread()).count();
+        let before = unread(&app);
+        let task = app.chat_event(pushed(&other, "9101", "Coucou", json!([])));
+        assert!(app.chats[i].is_unread(), "unread as soon as the push arrives");
+        assert_eq!(unread(&app), before + 1);
+        // The chat list reloaded by the push predates the message: it must not read it back.
+        drive(&mut app, task).await;
+        let chat = app.chats.iter().find(|c| c.id == other).unwrap();
+        assert!(chat.is_unread());
+        assert_eq!(chat.last_message.as_ref().unwrap().id, "9101");
+    }
+
+    #[tokio::test]
+    async fn a_pushed_conversation_update_keeps_its_settings_so_the_next_banner_needs_no_fetch() {
+        let mut app = demo().await;
+        let other = app
+            .chats
+            .iter()
+            .map(|c| c.id.clone())
+            .find(|id| app.selected.as_ref().is_none_or(|s| s.id() != id))
+            .unwrap();
+        let update = |props: Value| -> teams_chat::Event {
+            serde_json::from_value(json!({
+                "resourceType": "ConversationUpdate",
+                "resourceLink": format!("https://mock/v1/users/ME/conversations/{other}"),
+                "resource": {"id": other, "properties": props},
+            }))
+            .unwrap()
+        };
+        let _ = app.chat_event(update(json!({"consumptionhorizon": "1;2;3"})));
+        assert!(app.notifications.conversations.contains_key(&other));
+        let task = app.chat_event(pushed(&other, "9201", "Vite", json!([])));
+        assert!(
+            !app.notifications.waiting.contains_key(&other),
+            "delivered without waiting for the conversation's settings"
+        );
+        assert_eq!(banners(&drive(&mut app, task).await).len(), 1);
+
+        // Muted on another client: the update's own `alerts` applies at once.
+        let _ = app.chat_event(update(json!({"alerts": "false"})));
+        assert!(app.chat_muted(&other));
+        let task = app.chat_event(pushed(&other, "9202", "Muet", json!([])));
+        assert!(banners(&drive(&mut app, task).await).is_empty());
     }
 
     /// Demo end to end: the peer's reply is pushed through the fake Trouter to `/messaging` and becomes a banner.

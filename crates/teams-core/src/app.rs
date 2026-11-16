@@ -1535,6 +1535,10 @@ impl App {
                                         .and_then(conversations::message_time)
                             {
                                 conversations::update_last_message(chat, message);
+                                // Its read state goes with that newer message (unread from a push).
+                                if old.is_read.is_some() {
+                                    chat.is_read = old.is_read;
+                                }
                             }
                             let changed = self.details.get(&chat.id).is_some_and(|d| {
                                 chat.roster_version
