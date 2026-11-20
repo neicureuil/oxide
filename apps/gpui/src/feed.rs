@@ -14,19 +14,38 @@ use std::sync::Arc;
 use teams_core::{Action, MessageView, NotificationsAction, OxideCore, PostView};
 
 /// What a list needs to know of its items: mine follow to the bottom, others' are counted while scrolled up.
-pub trait FeedEntry {
+pub trait FeedEntry: Clone + 'static {
     fn mine(&self) -> bool;
+    fn key(&self) -> String;
+    /// Drops what the app never reads: the flat `runs` repeat the body's text for Swift's copy and
+    /// height estimates; here the text comes from the blocks.
+    fn strip(&mut self);
 }
 impl FeedEntry for MessageView {
     fn mine(&self) -> bool {
         self.mine
+    }
+    fn key(&self) -> String {
+        self.id.clone()
+    }
+    fn strip(&mut self) {
+        self.runs = Vec::new();
     }
 }
 impl FeedEntry for PostView {
     fn mine(&self) -> bool {
         self.root.mine
     }
+    fn key(&self) -> String {
+        self.id.clone()
+    }
+    fn strip(&mut self) {
+        self.root.runs = Vec::new();
+    }
 }
+
+/// Items kept on each side of what is on screen; the others are asked of the core again when drawn.
+const KEEP: usize = 30;
 
 thread_local! {
     /// Messages that just arrived at the bottom, and when: their rows fade in once (`insertRows` with
@@ -70,9 +89,17 @@ pub fn is_fresh(id: &str) -> bool {
 }
 
 /// One list of the open conversation, merged from the core's differences, drawn virtualised.
+///
+/// The core keeps every message (parsed once); this keeps only the views of items on screen and around it,
+/// and builds the others again from the core when they scroll back in: a Rust front end shares the core's
+/// memory, so it need not hold a second copy of the whole conversation as the Swift app had to.
 pub struct FeedList<T> {
     ids: Rc<RefCell<Vec<String>>>,
-    pub views: HashMap<String, T>,
+    views: Rc<RefCell<HashMap<String, T>>>,
+    /// Builds views of the open conversation by id, from the core's state.
+    fetch: Rc<dyn Fn(&[String]) -> Vec<T>>,
+    /// Index range whose views are kept: what is on screen and `KEEP` on each side.
+    near: Rc<Cell<(usize, usize)>>,
     pub list: ListState,
     /// First id the list was built with, to tell older items (before) from newer ones (after).
     first: Option<String>,
@@ -81,37 +108,66 @@ pub struct FeedList<T> {
     unseen: Cell<usize>,
 }
 
-impl<T> FeedList<T> {
+impl<T: FeedEntry> FeedList<T> {
     /// `more` is sent once the list is scrolled near its oldest item; visible ids go out as `ShowMessages`.
-    pub fn new(core: &Arc<OxideCore>, more: Action, alignment: ListAlignment) -> Self {
+    pub fn new(
+        core: &Arc<OxideCore>,
+        more: Action,
+        alignment: ListAlignment,
+        fetch: impl Fn(&[String]) -> Vec<T> + 'static,
+    ) -> Self {
+        let core = core.clone();
+        Self::with_sender(move |action| core.send(action), more, alignment, fetch)
+    }
+
+    /// Same, sending actions through `send` (tests use it without a core).
+    fn with_sender(
+        send: impl Fn(Action) + 'static,
+        more: Action,
+        alignment: ListAlignment,
+        fetch: impl Fn(&[String]) -> Vec<T> + 'static,
+    ) -> Self {
         let list = ListState::new(0, alignment, px(800.));
         let ids: Rc<RefCell<Vec<String>>> = Rc::default();
+        let views: Rc<RefCell<HashMap<String, T>>> = Rc::default();
+        let near = Rc::new(Cell::new((0, 0)));
         let can_load_more = Rc::new(Cell::new(false));
         let shown: Rc<RefCell<Vec<String>>> = Rc::default();
         {
-            let core = core.clone();
             let ids = ids.clone();
+            let views = views.clone();
+            let near = near.clone();
             let can_load_more = can_load_more.clone();
             list.set_scroll_handler(move |event, _, _| {
                 // Reaching the top loads one page, as Teams does; the next one waits for this one to land.
                 if event.visible_range.start < 3 && can_load_more.replace(false) {
-                    core.send(more.clone());
+                    send(more.clone());
+                }
+                let ids = ids.borrow();
+                // Views far from the screen go; they are built again if scrolled back to.
+                let window = (
+                    event.visible_range.start.saturating_sub(KEEP),
+                    (event.visible_range.end + KEEP).min(ids.len()),
+                );
+                if near.replace(window) != window {
+                    trim(&ids, &mut views.borrow_mut(), window);
                 }
                 // Previews of what is on screen and about a screen around it load first.
-                let ids = ids.borrow();
                 let span = event.visible_range.len().max(1);
                 let from = event.visible_range.start.saturating_sub(span);
                 let to = (event.visible_range.end + span).min(ids.len());
-                let near: Vec<String> = ids.get(from..to).map(|s| s.to_vec()).unwrap_or_default();
-                if *shown.borrow() != near && !near.is_empty() {
-                    *shown.borrow_mut() = near.clone();
-                    core.send(Action::ShowMessages { ids: near });
+                let near_ids: Vec<String> = ids.get(from..to).map(|s| s.to_vec()).unwrap_or_default();
+                if *shown.borrow() != near_ids && !near_ids.is_empty() {
+                    *shown.borrow_mut() = near_ids.clone();
+                    send(Action::ShowMessages { ids: near_ids });
                 }
             });
         }
         Self {
             ids,
-            views: HashMap::new(),
+            views,
+            fetch: Rc::new(fetch),
+            near,
             list,
             first: None,
             can_load_more,
@@ -128,21 +184,85 @@ impl<T> FeedList<T> {
     pub fn id(&self, ix: usize) -> Option<String> {
         self.ids.borrow().get(ix).cloned()
     }
-    pub fn get(&self, ix: usize) -> Option<&T> {
-        self.ids.borrow().get(ix).and_then(|id| self.views.get(id))
-    }
     pub fn ids(&self) -> Vec<String> {
         self.ids.borrow().clone()
     }
+    pub fn contains(&self, id: &str) -> bool {
+        self.ids.borrow().iter().any(|i| i == id)
+    }
+    /// Whether a kept view matches `f` (views far from the screen are not looked at).
+    pub fn any_kept(&self, f: impl Fn(&T) -> bool) -> bool {
+        self.views.borrow().values().any(f)
+    }
+
+    /// The item at `ix`, from the kept views or else built by the core (with its neighbours, kept if near).
+    pub fn get(&self, ix: usize) -> Option<T> {
+        let id = self.id(ix)?;
+        if let Some(view) = self.views.borrow().get(&id) {
+            return Some(view.clone());
+        }
+        // Rows come in runs as the list scrolls: ask for the missing ones around this one at once.
+        let (from, to) = (ix.saturating_sub(8), (ix + 9).min(self.len()));
+        let missing: Vec<String> = {
+            let ids = self.ids.borrow();
+            let views = self.views.borrow();
+            ids[from..to].iter().filter(|i| !views.contains_key(*i)).cloned().collect()
+        };
+        let mut found = None;
+        let (near_from, near_to) = self.near_window();
+        let positions: HashMap<String, usize> =
+            (from..to).filter_map(|i| self.id(i).map(|id| (id, i))).collect();
+        for mut view in (self.fetch)(&missing) {
+            view.strip();
+            let key = view.key();
+            if key == id {
+                found = Some(view.clone());
+            }
+            if positions.get(&key).is_some_and(|i| (near_from..near_to).contains(i)) {
+                self.views.borrow_mut().insert(key, view);
+            }
+        }
+        found
+    }
+
+    /// Views of `ids` (in that order), kept or built by the core; those built are not kept.
+    pub fn views_of(&self, ids: &[String]) -> Vec<T> {
+        let missing: Vec<String> = {
+            let views = self.views.borrow();
+            ids.iter().filter(|i| !views.contains_key(*i)).cloned().collect()
+        };
+        let mut built: HashMap<String, T> = (self.fetch)(&missing)
+            .into_iter()
+            .map(|mut v| {
+                v.strip();
+                (v.key(), v)
+            })
+            .collect();
+        let views = self.views.borrow();
+        ids.iter()
+            .filter_map(|id| views.get(id).cloned().or_else(|| built.remove(id)))
+            .collect()
+    }
+
     pub fn clear(&mut self) {
         self.ids.borrow_mut().clear();
-        self.views.clear();
+        self.views.borrow_mut().clear();
+        self.near.set((0, 0));
         self.list.reset(0);
         self.first = None;
         self.unseen.set(0);
     }
     pub fn set_can_load_more(&self, more: bool) {
         self.can_load_more.set(more);
+    }
+
+    /// The kept range; before the list first scrolls, the newest items (the lists open at the bottom).
+    fn near_window(&self) -> (usize, usize) {
+        let len = self.len();
+        match self.near.get() {
+            (0, 0) => (len.saturating_sub(2 * KEEP), len),
+            window => window,
+        }
     }
 
     /// Whether the newest item is in view: a bottom-aligned list then follows what arrives.
@@ -164,20 +284,11 @@ impl<T> FeedList<T> {
         });
         self.unseen.set(0);
     }
-}
 
-impl<T: FeedEntry> FeedList<T> {
-    /// Merges one difference and remeasures only the rows that changed.
-    pub fn apply(
-        &mut self,
-        ids: Option<Vec<String>>,
-        changed: Vec<T>,
-        id_of: impl Fn(&T) -> String,
-    ) {
+    /// Merges one difference and remeasures only the rows that changed; keeps the views near the screen.
+    pub fn apply(&mut self, ids: Option<Vec<String>>, changed: Vec<T>) {
         let mut appended: Vec<String> = Vec::new();
         if let Some(new) = ids {
-            let keep: HashSet<&String> = new.iter().collect();
-            self.views.retain(|id, _| keep.contains(id));
             let old = self.list.item_count();
             if old == 0 || new.len() < old {
                 self.list.reset(new.len());
@@ -186,6 +297,11 @@ impl<T: FeedEntry> FeedList<T> {
                 let added = new.len() - old;
                 if self.first.as_ref() == new.get(added) {
                     self.list.splice(0..0, added);
+                    // The kept window moves with the items it covers.
+                    let (from, to) = self.near.get();
+                    if (from, to) != (0, 0) {
+                        self.near.set((from + added, to + added));
+                    }
                 } else {
                     self.list.splice(old..old, added);
                     appended = new[old..].to_vec();
@@ -194,10 +310,13 @@ impl<T: FeedEntry> FeedList<T> {
             self.first = new.first().cloned();
             *self.ids.borrow_mut() = new;
         }
+        let mine = changed.iter().any(|v| appended.contains(&v.key()) && v.mine());
         {
             let ids = self.ids.borrow();
-            for item in changed {
-                let id = id_of(&item);
+            let mut views = self.views.borrow_mut();
+            for mut item in changed {
+                item.strip();
+                let id = item.key();
                 if let Some(ix) = ids.iter().position(|i| *i == id) {
                     self.list.splice(ix..ix + 1, 1);
                     // The next row may drop or gain its day separator.
@@ -205,8 +324,13 @@ impl<T: FeedEntry> FeedList<T> {
                         self.list.splice(ix + 1..ix + 2, 1);
                     }
                 }
-                self.views.insert(id, item);
+                views.insert(id, item);
             }
+            let window = match self.near.get() {
+                (0, 0) => (ids.len().saturating_sub(2 * KEEP), ids.len()),
+                (from, to) => (from, to.min(ids.len())),
+            };
+            trim(&ids, &mut views, window);
         }
         if !appended.is_empty() {
             FRESH.with(|f| {
@@ -221,9 +345,6 @@ impl<T: FeedEntry> FeedList<T> {
         if appended.is_empty() || self.at_bottom() {
             return;
         }
-        let mine = appended
-            .iter()
-            .any(|id| self.views.get(id).is_some_and(|v| v.mine()));
         if mine {
             // What I send shows, as in Teams, even when reading older messages.
             self.jump_to_bottom();
@@ -231,6 +352,12 @@ impl<T: FeedEntry> FeedList<T> {
             self.unseen.set(self.unseen.get() + appended.len());
         }
     }
+}
+
+/// Keeps only the views whose item sits in `window` (indices into `ids`).
+fn trim<T>(ids: &[String], views: &mut HashMap<String, T>, (from, to): (usize, usize)) {
+    let keep: HashSet<&String> = ids.get(from..to.min(ids.len())).unwrap_or_default().iter().collect();
+    views.retain(|id, _| keep.contains(id));
 }
 
 /// Row padding of `FeedItemView`: 24 across, 8 above and below.
@@ -290,7 +417,7 @@ pub fn chat_row(
     window: &mut Window,
     cx: &mut Context<Oxide>,
 ) -> AnyElement {
-    let Some(msg) = this.messages.get(ix).cloned() else {
+    let Some(msg) = this.messages.get(ix) else {
         return div().into_any_element();
     };
     let Some(view) = this.conversation.as_ref() else {
@@ -332,7 +459,7 @@ pub fn reply_row(
     window: &mut Window,
     cx: &mut Context<Oxide>,
 ) -> AnyElement {
-    let Some(msg) = this.replies.get(ix).cloned() else {
+    let Some(msg) = this.replies.get(ix) else {
         return div().into_any_element();
     };
     let Some(thread) = this.conversation.as_ref().and_then(|c| c.thread.as_ref()) else {
@@ -379,7 +506,7 @@ pub fn post_row(
     window: &mut Window,
     cx: &mut Context<Oxide>,
 ) -> AnyElement {
-    let Some(post) = this.posts.get(ix).cloned() else {
+    let Some(post) = this.posts.get(ix) else {
         return div().into_any_element();
     };
     let Some(view) = this.conversation.as_ref() else {
@@ -594,4 +721,71 @@ pub fn outline(
         .rounded(px(8.))
         .font_weight(FontWeight::NORMAL)
         .text_color(theme.text_soft)
+}
+
+#[cfg(test)]
+mod keep_tests {
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct Item(String);
+    impl FeedEntry for Item {
+        fn mine(&self) -> bool {
+            false
+        }
+        fn key(&self) -> String {
+            self.0.clone()
+        }
+        fn strip(&mut self) {}
+    }
+
+    fn feed(asked: Rc<RefCell<Vec<String>>>) -> FeedList<Item> {
+        FeedList::with_sender(|_| {}, Action::MoreFeed, ListAlignment::Bottom, move |ids: &[String]| {
+            asked.borrow_mut().extend(ids.iter().cloned());
+            ids.iter().map(|id| Item(id.clone())).collect()
+        })
+    }
+
+    #[test]
+    fn keeps_views_near_the_screen_and_asks_the_core_for_the_others() {
+        let asked: Rc<RefCell<Vec<String>>> = Rc::default();
+        let mut list = feed(asked.clone());
+        let ids: Vec<String> = (0..200).map(|i| format!("m{i}")).collect();
+        let all: Vec<Item> = ids.iter().map(|i| Item(i.clone())).collect();
+        list.apply(Some(ids), all);
+        // Opened at the bottom: only the newest 2 × KEEP are kept.
+        assert_eq!(list.views.borrow().len(), 2 * KEEP);
+        assert!(list.views.borrow().contains_key("m199"));
+        assert!(!list.views.borrow().contains_key("m0"));
+        // An old one is built by the core when drawn, without being kept (it is far from the screen).
+        assert_eq!(list.get(0), Some(Item("m0".into())));
+        assert!(asked.borrow().contains(&"m0".to_owned()));
+        assert!(!list.views.borrow().contains_key("m0"));
+        // A kept one is not asked for again.
+        asked.borrow_mut().clear();
+        assert_eq!(list.get(190), Some(Item("m190".into())));
+        assert!(asked.borrow().is_empty());
+    }
+
+    #[test]
+    fn older_pages_shift_the_kept_window_and_changes_far_away_are_dropped() {
+        let mut list = feed(Rc::default());
+        let ids: Vec<String> = (100..200).map(|i| format!("m{i}")).collect();
+        let all: Vec<Item> = ids.iter().map(|i| Item(i.clone())).collect();
+        list.apply(Some(ids.clone()), all);
+        // Scrolled near the top of the first page: its rows are drawn, so their views are built and kept.
+        list.near.set((0, 40));
+        for ix in 0..40 {
+            list.get(ix);
+        }
+        let mut older: Vec<String> = (50..100).map(|i| format!("m{i}")).collect();
+        older.extend(ids);
+        let page: Vec<Item> = (50..100).map(|i| Item(format!("m{i}"))).collect();
+        list.apply(Some(older), page);
+        // The window followed the items it covered; the new page above it is not kept.
+        assert_eq!(list.near.get(), (50, 90));
+        assert!(list.views.borrow().contains_key("m100"));
+        assert!(!list.views.borrow().contains_key("m50"));
+        assert_eq!(list.views_of(&["m50".to_owned(), "m100".to_owned()]).len(), 2);
+    }
 }

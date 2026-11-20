@@ -46,7 +46,7 @@ struct State {
     /// Feed position of each message, read when a press starts: (list, row).
     order: HashMap<String, (u8, usize)>,
     /// Plain text of each message by id, for messages between both ends that are off screen.
-    plain: HashMap<String, Vec<String>>,
+    plain: Option<Rc<dyn Fn(&str) -> Vec<String>>>,
     drawn: Vec<Drawn>,
     /// The message whose body is being drawn and its next segment, so `register` needs no plumbing.
     current: Option<(String, i32)>,
@@ -269,7 +269,8 @@ pub struct Feed {
     /// Message ids in feed order, per list (main feed, then the reply pane).
     pub lists: Vec<Vec<String>>,
     /// Plain text of each message (author line, then body), for copying ones scrolled away.
-    pub plain: HashMap<String, Vec<String>>,
+    /// A message's plain text (author line, then body), asked only for those copied whole.
+    pub plain: Rc<dyn Fn(&str) -> Vec<String>>,
 }
 
 /// The feed's mouse listener: lay it over the conversation (it draws nothing). `feed` is read on a press;
@@ -306,7 +307,7 @@ pub fn listener(
                             ids.iter().enumerate().map(move |(row, id)| (id.clone(), (list as u8, row)))
                         })
                         .collect();
-                    s.plain = plain;
+                    s.plain = Some(plain);
                     s.press(spot, event.click_count, event.modifiers.shift);
                 });
                 // The selection is the feed's now: ⌘C must not go to the composer.
@@ -483,7 +484,7 @@ impl State {
             // Units drawn this frame give exact ranges; a message scrolled away is taken whole.
             let mut drawn: Vec<&Drawn> = self.drawn.iter().filter(|d| &d.unit.message == *message).collect();
             if drawn.is_empty() {
-                parts.extend(self.plain.get(*message).cloned().unwrap_or_default());
+                parts.extend(self.plain.as_ref().map(|plain| plain(message)).unwrap_or_default());
                 continue;
             }
             drawn.sort_by_key(|d| d.unit.segment);
@@ -533,7 +534,9 @@ mod tests {
     fn state() -> State {
         let mut s = State::default();
         s.order = [("a".to_owned(), (0, 0)), ("b".to_owned(), (0, 1)), ("c".to_owned(), (0, 2))].into();
-        s.plain = [("b".to_owned(), vec!["Bob".to_owned(), "middle message".to_owned()])].into();
+        s.plain = Some(Rc::new(|id: &str| {
+            if id == "b" { vec!["Bob".to_owned(), "middle message".to_owned()] } else { Vec::new() }
+        }));
         s
     }
 
@@ -611,7 +614,7 @@ mod tests {
                     .child(listener(
                         |_| Feed {
                             lists: vec![vec!["a".into(), "b".into()]],
-                            plain: HashMap::new(),
+                            plain: Rc::new(|_: &str| Vec::new()),
                         },
                         |_, _| {},
                     ))

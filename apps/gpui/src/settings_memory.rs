@@ -13,6 +13,10 @@ pub enum MemoryKind {
     Stacks,
     Code,
     Other,
+    /// GPU memory the app owns without mapping it (Metal textures): no region shows it.
+    GpuTextures,
+    /// The rest of the footprint no region shows (kernel-owned memory, page tables).
+    Unmapped,
 }
 
 impl MemoryKind {
@@ -26,6 +30,12 @@ impl MemoryKind {
             Self::Stacks => "ui.debug.kind_stacks",
             Self::Code => "ui.debug.kind_code",
             Self::Other => "ui.debug.kind_other",
+            Self::GpuTextures => {
+                return crate::oxide::text("Mémoire GPU (textures)", "GPU memory (textures)").to_owned();
+            }
+            Self::Unmapped => {
+                return crate::oxide::text("Mémoire non mappée (système)", "Unmapped memory (system)").to_owned();
+            }
         })
     }
 
@@ -62,6 +72,10 @@ pub struct MemoryReport {
     pub kinds: Vec<(MemoryKind, u64)>,
     pub heap_in_use: u64,
     pub heap_allocated: u64,
+    /// Heap pages written to (regions tagged malloc), used or freed but kept by malloc.
+    pub heap_dirty: u64,
+    /// Bytes the Rust allocator has handed out and not got back: the whole app's, core and window.
+    pub rust_live: u64,
     pub avatars: ImageMemory,
     pub previews: ImageMemory,
     pub cache_preview_files: u64,
@@ -113,8 +127,19 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
         .unwrap_or(0)
 }
 
-/// (footprint, peak, resident) from `task_vm_info` (offsets of the packed rev 3 struct).
-fn task_counters() -> Option<(u64, u64, u64)> {
+/// What `task_vm_info` says beyond the regions: memory the process owns without mapping it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Ledgers {
+    /// GPU memory charged to the app (Metal textures and buffers), with its compressed part.
+    pub graphics: u64,
+    /// Same for media (video decoding, camera).
+    pub media: u64,
+    /// Same for the neural engine.
+    pub neural: u64,
+}
+
+/// `task_vm_info` from the kernel, as bytes (offsets of the packed struct, revisions 1 to 3).
+fn task_vm_info() -> Option<Vec<u8>> {
     // Larger than any revision: the kernel fills what it knows and says how much.
     let mut buffer = [0i32; 128];
     let mut count = buffer.len() as u32;
@@ -130,14 +155,34 @@ fn task_counters() -> Option<(u64, u64, u64)> {
     if status != KERN_SUCCESS {
         return None;
     }
-    let bytes: Vec<u8> = buffer[..count as usize]
-        .iter()
-        .flat_map(|n| n.to_ne_bytes())
-        .collect();
+    Some(
+        buffer[..count as usize]
+            .iter()
+            .flat_map(|n| n.to_ne_bytes())
+            .collect(),
+    )
+}
+
+/// (footprint, peak, resident).
+fn task_counters() -> Option<(u64, u64, u64)> {
+    let bytes = task_vm_info()?;
     let resident = u64_at(&bytes, 16);
     let footprint = u64_at(&bytes, 144);
     let peak = u64_at(&bytes, 168);
     Some((footprint, peak, resident))
+}
+
+/// The per-tag ledgers (rev 3): footprint plus its compressed part, for graphics, media and neural memory.
+fn ledgers() -> Ledgers {
+    let Some(bytes) = task_vm_info() else {
+        return Ledgers::default();
+    };
+    // Missing on older kernels: `u64_at` reads 0 past what was filled.
+    Ledgers {
+        graphics: u64_at(&bytes, 272) + u64_at(&bytes, 280),
+        media: u64_at(&bytes, 240) + u64_at(&bytes, 248),
+        neural: u64_at(&bytes, 304) + u64_at(&bytes, 312),
+    }
 }
 
 /// The footprint alone, cheap enough for the settings home.
@@ -154,6 +199,7 @@ pub fn measure() -> MemoryReport {
         report.resident = resident;
     }
     let mut totals: Vec<(MemoryKind, u64)> = Vec::new();
+    let mut gpu_mapped = 0u64;
     // SAFETY: a plain exported constant.
     let page = unsafe { vm_kernel_page_size } as u64;
     let (mut address, mut size, mut depth) = (0u64, 0u64, 0u32);
@@ -184,6 +230,10 @@ pub fn measure() -> MemoryReport {
         let dirtied = u32_at(&bytes, 36) as u64;
         let external_pager = bytes[46] != 0;
         let used = (dirtied + swapped) * page;
+        // `VM_MEMORY_IOACCELERATOR`: GPU memory mapped here, also in the graphics ledger.
+        if user_tag == 88 {
+            gpu_mapped += used;
+        }
         if used > 0 {
             let kind = MemoryKind::of(user_tag, external_pager);
             match totals.iter_mut().find(|(k, _)| *k == kind) {
@@ -193,8 +243,20 @@ pub fn measure() -> MemoryReport {
         }
         address = address.saturating_add(size);
     }
+    // What no region shows: the footprint also counts memory the app owns unmapped, mostly GPU textures,
+    // which the graphics ledger counts along with the GPU memory mapped above.
+    let regions: u64 = totals.iter().map(|k| k.1).sum();
+    let unmapped = report.footprint.saturating_sub(regions);
+    let gpu = ledgers().graphics.saturating_sub(gpu_mapped).min(unmapped);
+    for (kind, bytes) in [(MemoryKind::GpuTextures, gpu), (MemoryKind::Unmapped, unmapped - gpu)] {
+        if bytes > 0 {
+            totals.push((kind, bytes));
+        }
+    }
+    report.heap_dirty = totals.iter().find(|k| k.0 == MemoryKind::Heap).map_or(0, |k| k.1);
     totals.sort_by(|a, b| b.1.cmp(&a.1));
     report.kinds = totals;
+    report.rust_live = teams_core::rust_memory().live_bytes;
     let mut heap = MallocStatistics::default();
     // SAFETY: null means every zone; `heap` is a valid out struct.
     unsafe { malloc_zone_statistics(std::ptr::null_mut(), &mut heap) };
@@ -245,7 +307,20 @@ pub fn size(bytes: u64) -> String {
     format!("{text} {name}")
 }
 
+/// "Freed but kept by malloc", for the heap card and the report.
+pub fn freed_kept_label() -> String {
+    crate::oxide::text("Libéré mais gardé par malloc", "Freed but kept by malloc").to_owned()
+}
+pub fn rust_label() -> String {
+    crate::oxide::text("Allocations Rust (toute l'app)", "Rust allocations (whole app)").to_owned()
+}
+
 impl MemoryReport {
+    /// Heap pages written to but not in use: malloc keeps them until it gives them back.
+    pub fn freed_kept(&self) -> u64 {
+        self.heap_dirty.saturating_sub(self.heap_in_use)
+    }
+
     /// Plain text to paste in a bug report.
     pub fn text(&self) -> String {
         let mut lines = vec![format!(
@@ -268,6 +343,8 @@ impl MemoryReport {
             size(self.heap_in_use),
             size(self.heap_allocated)
         ));
+        lines.push(format!("{}: {}", freed_kept_label(), size(self.freed_kept())));
+        lines.push(format!("{}: {}", rust_label(), size(self.rust_live)));
         lines.push(format!(
             "{}: {}, {}",
             tr("ui.debug.avatars"),
@@ -305,6 +382,10 @@ mod tests {
         assert!(report.peak >= report.footprint / 2);
         assert!(report.heap_in_use > 0);
         assert!(!report.kinds.is_empty());
+        // Every byte of the footprint is in a kind, the unmapped ones included.
+        let total: u64 = report.kinds.iter().map(|k| k.1).sum();
+        assert!(total >= report.footprint * 95 / 100, "{total} of {}", report.footprint);
+        assert!(report.rust_live > 0);
     }
 
     #[test]

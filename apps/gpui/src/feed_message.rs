@@ -39,7 +39,7 @@ fn more_key(id: &str) -> String {
 }
 
 fn plain_text(msg: &MessageView) -> String {
-    msg.runs.iter().map(|r| r.text.as_str()).collect()
+    feed_blocks::body_text(&msg.blocks)
 }
 
 /// UTF-16 length, the unit of the core's draft offsets.
@@ -860,9 +860,11 @@ mod tests {
             mention: false,
         };
         let mut msg = test_message();
-        msg.runs = vec![run("one\ntwo")];
+        // The text comes from the blocks: the feed drops the flat runs it receives.
+        let text = |t: &str| vec![teams_core::BlockView::Text { runs: vec![run(t)] }];
+        msg.blocks = text("one\ntwo");
         assert!(quote_line(&msg).contains("one two"));
-        msg.runs = vec![run(&"x".repeat(200))];
+        msg.blocks = text(&"x".repeat(200));
         assert!(quote_line(&msg).ends_with('…'));
     }
 

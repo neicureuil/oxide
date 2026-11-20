@@ -175,11 +175,39 @@ fn glyph(
     size: f32,
     cx: &mut Context<Oxide>,
 ) -> AnyElement {
-    match thumb(this, &artwork_url(&emoji.id), cx) {
-        Thumb::Ready(picture) => img(picture)
-            .size(px(size))
-            .object_fit(ObjectFit::Contain)
-            .into_any_element(),
+    let url = artwork_url(&emoji.id);
+    match thumb(this, &url, cx) {
+        Thumb::Ready(picture) => {
+            let artwork = img(picture).size(px(size)).object_fit(ObjectFit::Contain);
+            // Just arrived with its batch: the artwork fades in over the glyph fading out, both on the
+            // same curve, rather than replacing it at a stroke.
+            if this.ui.composer.thumbs.fresh(&url) {
+                let glyph = div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(size * 24. / 28.))
+                    .child(emoji.text.clone());
+                div()
+                    .relative()
+                    .size(px(size))
+                    .child(crate::motion::animate(
+                        glyph,
+                        gpui::SharedString::from(format!("emoji-out-{}", emoji.id)),
+                        crate::motion::Curve::Standard,
+                        |d, t| d.opacity(1. - t),
+                    ))
+                    .child(crate::motion::fade_in(
+                        div().absolute().inset_0().child(artwork),
+                        gpui::SharedString::from(format!("emoji-in-{}", emoji.id)),
+                    ))
+                    .into_any_element()
+            } else {
+                artwork.into_any_element()
+            }
+        }
         _ => div()
             .size(px(size))
             .flex()

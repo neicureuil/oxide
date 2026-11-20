@@ -73,9 +73,10 @@ fn forget_gone_cards(this: &mut Oxide) {
     let (messages, posts, replies) = (&this.messages, &this.posts, &this.replies);
     let alive = |key: &String| {
         let message = key.split('/').next().unwrap_or_default();
-        messages.views.contains_key(message)
-            || replies.views.contains_key(message)
-            || posts.views.values().any(|p| p.root.id == message)
+        messages.contains(message)
+            || replies.contains(message)
+            || posts.contains(message)
+            || posts.any_kept(|p| p.root.id == message)
     };
     ui.card_inputs.retain(|k, _| alive(k));
     ui.card_values.retain(|k, _| alive(k));
@@ -119,31 +120,40 @@ fn selection_listener(this: &Oxide, cx: &mut Context<Oxide>) -> impl IntoElement
     let core = this.core.clone();
     crate::feed_select::listener(
         move |cx| {
+            let none = || crate::feed_select::Feed {
+                lists: Vec::new(),
+                plain: std::rc::Rc::new(|_: &str| Vec::new()),
+            };
             let Some(this) = entity.upgrade() else {
-                return crate::feed_select::Feed { lists: Vec::new(), plain: Default::default() };
+                return none();
             };
             let this = this.read(cx);
             let channel = this.conversation.as_ref().is_some_and(|c| c.is_channel);
-            // A post's texts are its root message's: order those by the posts'.
+            // A post's texts are its root message's: order those by the posts' (posts come by the page).
+            let posts = if channel { this.posts.views_of(&this.posts.ids()) } else { Vec::new() };
+            let root_of: std::collections::HashMap<String, String> =
+                posts.iter().map(|p| (p.root.id.clone(), p.id.clone())).collect();
             let main = if channel {
-                this.posts
-                    .ids()
-                    .iter()
-                    .filter_map(|id| this.posts.views.get(id).map(|p| p.root.id.clone()))
-                    .collect()
+                posts.iter().map(|p| p.root.id.clone()).collect()
             } else {
                 this.messages.ids()
             };
-            // What a message scrolled away gives when it is copied whole: its author, then its text.
-            let mut plain = std::collections::HashMap::new();
-            let mut add = |m: &teams_core::MessageView| {
-                let body: String = m.runs.iter().map(|r| r.text.as_str()).collect();
-                plain.insert(m.id.clone(), vec![m.sender.clone(), body]);
+            // What a message scrolled away gives when it is copied whole: its author, then its text, asked of
+            // the core then, for those between both ends only.
+            let fetch_core = this.core.clone();
+            let plain = move |id: &str| {
+                let message = match root_of.get(id) {
+                    Some(post) => fetch_core.post_views(std::slice::from_ref(post)).pop().map(|p| p.root),
+                    None => fetch_core.message_views(&[id.to_owned()]).pop(),
+                };
+                message
+                    .map(|m| vec![m.sender.clone(), crate::feed_blocks::body_text(&m.blocks)])
+                    .unwrap_or_default()
             };
-            this.messages.views.values().for_each(&mut add);
-            this.posts.views.values().for_each(|p| add(&p.root));
-            this.replies.views.values().for_each(&mut add);
-            crate::feed_select::Feed { lists: vec![main, this.replies.ids()], plain }
+            crate::feed_select::Feed {
+                lists: vec![main, this.replies.ids()],
+                plain: std::rc::Rc::new(plain),
+            }
         },
         move |url, _| core.send(Action::OpenUrl { url }),
     )
@@ -637,7 +647,7 @@ fn chat_actions(this: &Oxide, row: &ChatRow, cx: &mut Context<Oxide>) -> Vec<Any
 }
 
 /// A feed of the open conversation, virtualised, with the "new messages" pill over its bottom.
-fn feed_list<T: 'static>(
+fn feed_list<T: crate::feed::FeedEntry>(
     this: &mut Oxide,
     pick: fn(&Oxide) -> &FeedList<T>,
     row: fn(&mut Oxide, usize, &mut Window, &mut Context<Oxide>) -> AnyElement,
@@ -681,7 +691,7 @@ fn feed_list<T: 'static>(
 }
 
 /// « ↓ 3 nouveaux messages » while the reader is scrolled up; a click goes back to the newest.
-fn new_messages_pill<T: 'static>(
+fn new_messages_pill<T: crate::feed::FeedEntry>(
     this: &Oxide,
     id: &'static str,
     unseen: usize,
@@ -1168,7 +1178,7 @@ pub fn debug_step(
         if channel {
             this.posts.get(n).map(|p| p.root.clone())
         } else {
-            this.messages.get(n).cloned()
+            this.messages.get(n)
         }
     };
     match verb {
@@ -1248,7 +1258,6 @@ pub fn debug_step(
                 .filter_map(|i| this.messages.get(i))
                 .filter(|m| m.mine)
                 .nth(n)
-                .cloned()
             else {
                 return false;
             };

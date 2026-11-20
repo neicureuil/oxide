@@ -179,6 +179,11 @@ impl Oxide {
 
         cx.observe_window_activation(window, |this, window, cx| {
             this.active = window.is_window_active();
+            // In the background, what was freed goes back to the system at once.
+            #[cfg(target_os = "macos")]
+            if !this.active {
+                cx.background_spawn(async { crate::platform_memory::relieve() }).detach();
+            }
             // Reduce motion may have changed in System Settings meanwhile.
             crate::motion::refresh_reduced();
             this.core.set_active(this.active);
@@ -193,13 +198,39 @@ impl Oxide {
         .detach();
         // Notifications, network watcher, quitting mid-call, voicemail events.
         crate::platform::start(window, cx);
+        // In front, freed memory is given back every 30 s (conversation switches, pictures).
+        #[cfg(target_os = "macos")]
+        cx.spawn(async move |_, cx| {
+            loop {
+                cx.background_executor().timer(crate::platform_memory::EVERY).await;
+                // Unconditionally: malloc's statistics leave out its cache of freed large blocks (tens of MB
+                // after a conversation with pictures), and a pass every 30 s costs next to nothing.
+                cx.background_executor()
+                    .spawn(async { crate::platform_memory::relieve() })
+                    .await;
+            }
+        })
+        .detach();
         let signed_out = core.clone();
         // From the app menu, whatever has focus.
         gpui::App::on_action(cx, move |_: &SignOut, _| signed_out.send(Action::SignOut));
 
-        let messages = FeedList::new(&core, Action::MoreFeed, ListAlignment::Bottom);
-        let posts = FeedList::new(&core, Action::MoreFeed, ListAlignment::Bottom);
-        let replies = FeedList::new(&core, Action::MoreReplies, ListAlignment::Bottom);
+        // Views far from the screen are built again by the core when needed (see `FeedList`).
+        let fetch_messages = {
+            let core = core.clone();
+            move |ids: &[String]| core.message_views(ids)
+        };
+        let fetch_posts = {
+            let core = core.clone();
+            move |ids: &[String]| core.post_views(ids)
+        };
+        let fetch_replies = {
+            let core = core.clone();
+            move |ids: &[String]| core.message_views(ids)
+        };
+        let messages = FeedList::new(&core, Action::MoreFeed, ListAlignment::Bottom, fetch_messages);
+        let posts = FeedList::new(&core, Action::MoreFeed, ListAlignment::Bottom, fetch_posts);
+        let replies = FeedList::new(&core, Action::MoreReplies, ListAlignment::Bottom, fetch_replies);
         let system_dark = is_dark(window.appearance());
         let mut this = Self {
             core,
@@ -321,7 +352,9 @@ impl Oxide {
 
     fn apply_update(&mut self, update: Update, cx: &mut Context<Self>) {
         if let Some(ids) = update.avatar_ids {
-            for id in self.avatars.keep(ids) {
+            let (wanted, dropped) = self.avatars.keep(ids);
+            release_images(dropped, None, cx);
+            for id in wanted {
                 let core = self.core.clone();
                 let decoded = cx.background_spawn(async move {
                     let image = core.take_avatar(id.clone()).and_then(avatars::decode);
@@ -334,7 +367,9 @@ impl Oxide {
                         if let Some(image) = image
                             && this.avatars.kept.contains(&id)
                         {
-                            this.avatars.images.insert(id, image);
+                            if let Some(old) = this.avatars.images.insert(id, image) {
+                                release_images(vec![old], None, cx);
+                            }
                             cx.notify();
                         }
                     });
@@ -388,11 +423,11 @@ impl Oxide {
         }
         if let Some(feed) = update.feed {
             self.messages
-                .apply(feed.messages.ids, feed.messages.changed, |m| m.id.clone());
+                .apply(feed.messages.ids, feed.messages.changed);
             self.posts
-                .apply(feed.posts.ids, feed.posts.changed, |p| p.id.clone());
+                .apply(feed.posts.ids, feed.posts.changed);
             self.replies
-                .apply(feed.replies.ids, feed.replies.changed, |m| m.id.clone());
+                .apply(feed.replies.ids, feed.replies.changed);
         }
         let (more_feed, more_replies) = match &self.conversation {
             Some(c) => (
@@ -456,8 +491,15 @@ impl Oxide {
 
     fn keep_images(&mut self, srcs: Vec<String>, cx: &mut Context<Self>) {
         self.images.kept = srcs.into_iter().collect();
-        let kept = &self.images.kept;
-        self.images.images.retain(|src, _| kept.contains(src));
+        let gone: Vec<String> = self
+            .images
+            .images
+            .keys()
+            .filter(|src| !self.images.kept.contains(*src))
+            .cloned()
+            .collect();
+        let dropped = gone.iter().filter_map(|src| self.images.images.remove(src)).collect();
+        release_images(dropped, None, cx);
         let wanted: Vec<String> = self
             .images
             .kept
@@ -481,7 +523,9 @@ impl Oxide {
                     if let Some(image) = image
                         && this.images.kept.contains(&src)
                     {
-                        this.images.images.insert(src, image);
+                        if let Some(old) = this.images.images.insert(src, image) {
+                            release_images(vec![old], None, cx);
+                        }
                         cx.notify();
                     }
                 });
@@ -616,6 +660,15 @@ impl Oxide {
                 )
             })
             .into_any_element()
+    }
+}
+
+/// Frees pictures the app no longer holds from the windows' GPU atlases: GPUI keeps an uploaded image
+/// there until told, so dropping our `Arc` alone would leave its texture behind for good. `window` is the
+/// window being drawn, if any: GPUI cannot reach it through the app while it is.
+pub fn release_images(images: Vec<Arc<RenderImage>>, mut window: Option<&mut Window>, cx: &mut gpui::App) {
+    for image in images {
+        cx.drop_image(image, window.as_deref_mut());
     }
 }
 

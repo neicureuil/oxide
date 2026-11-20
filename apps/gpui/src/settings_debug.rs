@@ -147,9 +147,9 @@ pub fn section(this: &mut Oxide, cx: &mut Context<Oxide>) -> AnyElement {
     }
     kinds = kinds.child(widgets::muted(tr("ui.debug.breakdown_detail"), 12., &theme));
 
-    // The Rust allocator counter of the core (`rust_memory`) is not exported to Rust front ends yet: the heap
-    // shows its total and the pictures this window keeps.
-    let total = report.heap_in_use.max(1) as f64;
+    // The heap: what is in use, what malloc keeps after it was freed, the Rust allocator's count (core and
+    // window, all Rust here) and the pictures this window keeps.
+    let total = report.heap_dirty.max(report.heap_in_use).max(1) as f64;
     let heap = card(&theme)
         .gap(px(10.))
         .child(card_title(tr("ui.debug.heap")))
@@ -162,6 +162,20 @@ pub fn section(this: &mut Oxide, cx: &mut Context<Oxide>) -> AnyElement {
                 ],
             ),
             12.,
+            &theme,
+        ))
+        .child(row(
+            crate::settings_memory::freed_kept_label(),
+            size(report.freed_kept()),
+            report.freed_kept() as f64 / total,
+            None,
+            &theme,
+        ))
+        .child(row(
+            crate::settings_memory::rust_label(),
+            size(report.rust_live),
+            report.rust_live as f64 / total,
+            None,
             &theme,
         ))
         .child(row(

@@ -124,6 +124,29 @@ pub fn emoji_only(blocks: &[BlockView]) -> bool {
 }
 
 /// The text of `blocks` on one line, cut at `limit` characters.
+/// A body's text for copying, one line per paragraph, list item and table row (what Swift took from the
+/// flat `runs`, which the feed no longer keeps).
+pub fn body_text(blocks: &[BlockView]) -> String {
+    fn runs(runs: &[teams_core::RunView]) -> String {
+        runs.iter().map(|r| r.text.as_str()).collect()
+    }
+    fn lines(block: &BlockView, out: &mut Vec<String>) {
+        match block {
+            BlockView::Text { runs: r } => out.push(runs(r)),
+            BlockView::List { items, .. } => items.iter().flat_map(|i| i.blocks.iter()).for_each(|b| lines(b, out)),
+            BlockView::Quote { body, .. } => body.iter().for_each(|b| lines(b, out)),
+            BlockView::Code { text, .. } => out.push(text.clone()),
+            BlockView::Table { rows, .. } => out.extend(
+                rows.iter().map(|r| r.cells.iter().map(|c| runs(&c.runs)).collect::<Vec<_>>().join("\t")),
+            ),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    blocks.iter().for_each(|b| lines(b, &mut out));
+    out.join("\n")
+}
+
 pub fn excerpt(blocks: &[BlockView], limit: usize) -> String {
     fn text(block: &BlockView) -> String {
         match block {

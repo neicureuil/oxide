@@ -1287,7 +1287,8 @@ pub fn overlay(
 ) -> Option<AnyElement> {
     // Pictures of the pickers are kept only while one is open.
     if ![EMOJI, FUN, APPS].iter().any(|k| this.popup_open(k)) {
-        this.ui.composer.thumbs.clear();
+        let dropped = this.ui.composer.thumbs.clear();
+        crate::oxide::release_images(dropped, Some(window), cx);
     }
     if !this.popup_open(EMOJI) {
         composer_emoji::closed(this);

@@ -52,6 +52,8 @@ mod motion;
 mod new_chat;
 mod oxide;
 mod platform;
+#[cfg(target_os = "macos")]
+mod platform_memory;
 mod platform_app;
 mod platform_media;
 mod platform_network;
@@ -88,6 +90,9 @@ fn main() {
     let demo = teams_core::demo_available()
         && (std::env::args().any(|a| a == "--demo")
             || std::env::var("TEAMS_DEMO").is_ok_and(|v| v == "1"));
+    // GPUI keeps each picture twice, in memory and as a GPU texture: half the core's preview budget
+    // keeps the total where the SwiftUI app's single copy is.
+    teams_core::set_image_budget(32 << 20, 8 << 20);
     if let Some(home) = std::env::var_os("HOME") {
         let caches = std::path::Path::new(&home).join("Library/Caches/oxide-gpui");
         teams_core::set_cache_directory(caches.to_string_lossy().into_owned());

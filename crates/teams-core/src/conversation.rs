@@ -396,7 +396,7 @@ impl ConversationState {
             }
         }
         drop(handoff);
-        self.retained_images.evict_to(media::RETAINED_BYTES);
+        self.retained_images.evict_to(media::retained_bytes());
         self.shown.clear();
         self.paged = false;
         self.rendered.clear();
@@ -857,16 +857,16 @@ impl ConversationState {
                 })
                 .sum()
         };
-        if used(&self.images) + image.bytes > media::MAX_IMAGE_BYTES {
+        if used(&self.images) + image.bytes > media::max_image_bytes() {
             let (order, keep) = self.image_sources(None);
-            while used(&self.images) + image.bytes > media::MAX_IMAGE_BYTES
+            while used(&self.images) + image.bytes > media::max_image_bytes()
                 && self.drop_image(ctx, &order, &keep, true)
             {}
         }
         let used = used(&self.images);
         self.retained_images
-            .evict_to(media::MAX_IMAGE_BYTES.saturating_sub(used + image.bytes));
-        if used + self.retained_images.bytes() + image.bytes > media::MAX_IMAGE_BYTES {
+            .evict_to(media::max_image_bytes().saturating_sub(used + image.bytes));
+        if used + self.retained_images.bytes() + image.bytes > media::max_image_bytes() {
             media::ImageState::Failed(
                 t("core.conversation.preview_memory_full_open_another_chat").into(),
             )

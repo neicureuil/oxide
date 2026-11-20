@@ -15,6 +15,8 @@ teams-core = { path = "../../crates/teams-core" }
 # Shaders compiled at launch: building needs no Metal Toolchain (an optional Xcode download).
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 futures = "0.3"
+# Picker pictures from public CDNs, over kept-alive connections.
+reqwest = { workspace = true, features = ["blocking"] }
 # The Microsoft sign-in page in a native web view (WKWebView, WebView2, WebKitGTK).
 wry = "0.57"
 # Phosphor Icons (MIT), the app's icons on every platform.

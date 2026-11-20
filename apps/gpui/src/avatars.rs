@@ -15,8 +15,8 @@ pub struct Avatars {
 }
 
 impl Avatars {
-    /// Returns the ids to take from the core and decode.
-    pub fn keep(&mut self, ids: Vec<String>) -> Vec<String> {
+    /// Returns the ids to take from the core and decode, and the pictures dropped (to free on the GPU).
+    pub fn keep(&mut self, ids: Vec<String>) -> (Vec<String>, Vec<Arc<RenderImage>>) {
         if ids.is_empty() {
             self.requested.clear();
         }
@@ -27,16 +27,18 @@ impl Avatars {
             .filter(|id| !self.kept.contains(*id))
             .cloned()
             .collect();
-        self.images.retain(|id, _| !evicted.contains(id));
+        let dropped: Vec<Arc<RenderImage>> = evicted.iter().filter_map(|id| self.images.remove(id)).collect();
         if !evicted.is_empty() {
             self.requested
                 .retain(|key| !evicted.contains(key.split('|').next().unwrap_or_default()));
         }
-        self.kept
+        let wanted = self
+            .kept
             .iter()
             .filter(|id| !self.images.contains_key(*id) && self.decoding.insert((*id).clone()))
             .cloned()
-            .collect()
+            .collect();
+        (wanted, dropped)
     }
 }
 

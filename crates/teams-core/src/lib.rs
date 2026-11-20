@@ -82,6 +82,7 @@ pub use app::call::{CallParticipantView, CallVideoView, PrejoinView, RecordingVi
 pub use app::composer::MentionRange;
 pub use emoji::{ComposerEmoji, EmojiCategory};
 pub use memory::{RustMemory, rust_memory};
+pub use media::set_image_budget;
 
 use app::view::{Parts, Snapshot};
 use app::{App, Msg};
@@ -739,6 +740,24 @@ impl OxideCore {
             height,
             data,
         })
+    }
+}
+
+/// For Rust front ends, which share the core's memory: rather than keeping a copy of every view of the open
+/// conversation, they keep those on screen and ask again for the others, built from the core's own state.
+impl OxideCore {
+    /// Chat messages and thread replies of the open conversation, by id (unknown ids are skipped).
+    pub fn message_views(&self, ids: &[String]) -> Vec<MessageView> {
+        let only: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let state = lock(&self.inner.state);
+        let (mut messages, _, replies) = state.app.feed_views_for(Some(&only));
+        messages.extend(replies);
+        messages
+    }
+    /// Channel posts of the open channel, by post id.
+    pub fn post_views(&self, ids: &[String]) -> Vec<PostView> {
+        let only: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
+        lock(&self.inner.state).app.feed_views_for(Some(&only)).1
     }
 }
 
