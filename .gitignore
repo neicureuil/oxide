@@ -4,3 +4,4 @@ target/
 .build/
 apps/macos/OxideCore.xcframework/
 docs/
+target-*/

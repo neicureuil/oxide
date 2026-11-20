@@ -76,6 +76,12 @@ pub use app::team_list::{TeamListAction, TeamListControls, TeamSort};
 pub use app::view::*;
 pub use app::{Filter, Nav, RefreshMode, Tab};
 pub use task::Effect;
+// Named by Rust front ends (the GPUI app); Swift gets them through UniFFI.
+pub use app::activity::ActivityBadge;
+pub use app::call::{CallParticipantView, CallVideoView, PrejoinView, RecordingView};
+pub use app::composer::MentionRange;
+pub use emoji::{ComposerEmoji, EmojiCategory};
+pub use memory::{RustMemory, rust_memory};
 
 use app::view::{Parts, Snapshot};
 use app::{App, Msg};
