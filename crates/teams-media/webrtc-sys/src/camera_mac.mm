@@ -11,20 +11,16 @@
 #include "webrtc-sys/src/camera_mac.rs.h"
 
 @interface TeamsCameraDelegate : NSObject <RTC_OBJC_TYPE(RTCVideoCapturerDelegate)>
-- (instancetype)initWithSource:(std::shared_ptr<livekit_ffi::VideoTrackSource>)source
-                        frames:(std::shared_ptr<std::atomic<uint64_t>>)frames;
+- (instancetype)initWithSource:(std::shared_ptr<livekit_ffi::VideoTrackSource>)source;
 @end
 
 @implementation TeamsCameraDelegate {
   std::shared_ptr<livekit_ffi::VideoTrackSource> _source;
-  std::shared_ptr<std::atomic<uint64_t>> _frames;
 }
 
-- (instancetype)initWithSource:(std::shared_ptr<livekit_ffi::VideoTrackSource>)source
-                        frames:(std::shared_ptr<std::atomic<uint64_t>>)frames {
+- (instancetype)initWithSource:(std::shared_ptr<livekit_ffi::VideoTrackSource>)source {
   if (self = [super init]) {
     _source = source;
-    _frames = frames;
   }
   return self;
 }
@@ -38,7 +34,6 @@
                                   .set_rotation(static_cast<webrtc::VideoRotation>(frame.rotation))
                                   .set_timestamp_us(frame.timeStampNs / 1000)
                                   .build();
-  _frames->fetch_add(1, std::memory_order_relaxed);
   livekit_ffi::FrameMetadata metadata{false, 0, 0, {}};
   _source->get()->on_captured_frame(native, metadata);
 }
@@ -46,14 +41,8 @@
 
 namespace livekit_ffi {
 
-MacCamera::MacCamera(void* capturer,
-                     void* delegate,
-                     std::shared_ptr<std::atomic<uint64_t>> frames)
-    : capturer_(capturer), delegate_(delegate), frames_(frames) {}
-
-uint64_t MacCamera::frames() const {
-  return frames_->load(std::memory_order_relaxed);
-}
+MacCamera::MacCamera(void* capturer, void* delegate)
+    : capturer_(capturer), delegate_(delegate) {}
 
 MacCamera::~MacCamera() {
   stop();
@@ -90,7 +79,7 @@ std::unique_ptr<MacCamera> start_mac_camera(std::shared_ptr<VideoTrackSource> so
     if (!device) device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo] ?: devices.firstObject;
     if (!device) return nullptr;
 
-    // 720p when available, else the largest format up to 1280 px wide (the Swift engine's choice).
+    // 720p when available, else the largest format up to 1280 px wide.
     NSArray<AVCaptureDeviceFormat*>* formats =
         [RTC_OBJC_TYPE(RTCCameraVideoCapturer) supportedFormatsForDevice:device];
     AVCaptureDeviceFormat* format = nil;
@@ -106,12 +95,11 @@ std::unique_ptr<MacCamera> start_mac_camera(std::shared_ptr<VideoTrackSource> so
       max_rate = MAX(max_rate, range.maxFrameRate);
     NSInteger fps = (NSInteger)MIN(30.0, max_rate > 0 ? max_rate : 30.0);
 
-    auto frames = std::make_shared<std::atomic<uint64_t>>(0);
-    TeamsCameraDelegate* delegate = [[TeamsCameraDelegate alloc] initWithSource:source frames:frames];
+    TeamsCameraDelegate* delegate = [[TeamsCameraDelegate alloc] initWithSource:source];
     RTC_OBJC_TYPE(RTCCameraVideoCapturer)* capturer =
         [[RTC_OBJC_TYPE(RTCCameraVideoCapturer) alloc] initWithDelegate:delegate];
     [capturer startCaptureWithDevice:device format:format fps:fps];
-    return std::make_unique<MacCamera>((void*)capturer, (void*)delegate, frames);
+    return std::make_unique<MacCamera>((void*)capturer, (void*)delegate);
   }
 }
 

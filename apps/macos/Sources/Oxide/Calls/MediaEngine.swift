@@ -47,7 +47,7 @@ protocol MediaEngine: AnyObject {
     /// Local camera and remote video, for the call window.
     var localVideo: VideoFeed? { get }
     var remoteVideo: VideoFeed? { get }
-    /// Remote video tracks by m-line (`mid`): the mixer's cameras and shared screen.
+    /// Remote videos by m-line (`mid`): the mixer's cameras and shared screen.
     var remoteVideos: [String: VideoFeed] { get }
     /// CSRCs heard in the mixed audio just now: who is speaking.
     var speakingSources: Set<UInt32> { get }
@@ -70,7 +70,7 @@ protocol MediaEngine: AnyObject {
     func setCamera(callId: String, on: Bool)
     /// Captures `chosenScreen` (else the main screen) on the sharing line, or stops; renegotiates either way.
     func setScreenShare(callId: String, on: Bool)
-    /// What the next screen share captures, picked in the share sheet; the engine closes its lists.
+    /// What the next screen share captures, picked in the share sheet.
     var chosenScreen: ScreenChoice? { get set }
     /// The mixer's bounds for one of our sending lines (`controlVideoStreaming`), and a keyframe.
     func applySendLimits(callId: String, _ limits: SendLimits)

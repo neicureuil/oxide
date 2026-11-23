@@ -1,8 +1,6 @@
-//! Screen and window sharing with libwebrtc's desktop capturer (ScreenCaptureKit, Windows Graphics
-//! Capture / DXGI, PipeWire portal / X11), at 15 fps on the sharing line.
+//! Screen and window sharing with libwebrtc's desktop capturer, at 15 fps on the sharing line.
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use libwebrtc::desktop_capturer::{
@@ -17,7 +15,7 @@ use libwebrtc::video_frame::{I420Buffer, VideoBuffer, VideoFrame, VideoRotation}
 use libwebrtc::video_source::VideoResolution;
 use libwebrtc::video_source::native::NativeVideoSource;
 
-use crate::camera::{Failed, SizeChanged};
+use crate::camera::{CaptureThread, Failed, SizeChanged};
 use crate::video::{Sinks, VideoSlot};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(1000 / 15);
@@ -90,16 +88,14 @@ fn find(capturer: &DesktopCapturer, id: u64) -> Option<CaptureSource> {
         .find(|s| s.id() == id)
 }
 
-/// The frame as RGBA, shrunk to `max_width`.
 fn scaled_rgba(frame: &DesktopFrame, max_width: u32) -> Option<(u32, u32, Vec<u8>)> {
-    let i420 = to_i420(frame)?;
+    let mut i420 = to_i420(frame)?;
     let (width, height) = (i420.width(), i420.height());
     let scale = (f64::from(max_width) / f64::from(width)).min(1.0);
     let (w, h) = (
         ((f64::from(width) * scale) as u32).max(2) & !1,
         ((f64::from(height) * scale) as u32).max(2) & !1,
     );
-    let mut i420 = i420;
     let small = i420.scale(w as i32, h as i32);
     let (y, u, v) = small.data();
     let (sy, su, sv) = small.strides();
@@ -133,11 +129,7 @@ fn to_i420(frame: &DesktopFrame) -> Option<I420Buffer> {
     Some(out)
 }
 
-/// A running capture; `stop` ends its thread.
-pub(crate) struct ScreenCapture {
-    stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
-}
+pub(crate) struct ScreenCapture(CaptureThread);
 
 impl ScreenCapture {
     /// Captures `source`, else the main screen. `None` when capturing isn't allowed or possible.
@@ -163,7 +155,6 @@ impl ScreenCapture {
             true,
         );
         let track = factory.create_video_track("screen0", video.clone());
-        let stop = Arc::new(AtomicBool::new(false));
         let permanent_failure = Arc::new(AtomicBool::new(false));
         {
             let permanent_failure = permanent_failure.clone();
@@ -185,37 +176,22 @@ impl ScreenCapture {
                 Err(CaptureError::Temporary) => {}
             });
         }
-        let thread = {
-            let stop = stop.clone();
-            std::thread::Builder::new()
-                .name("teams-media-screen".into())
-                .spawn(move || {
-                    while !stop.load(Ordering::Relaxed) {
-                        let started = Instant::now();
-                        capturer.capture_frame();
-                        if permanent_failure.load(Ordering::Relaxed) {
-                            log::warn!("screen capture failed");
-                            failed();
-                            return;
-                        }
-                        std::thread::sleep(FRAME_INTERVAL.saturating_sub(started.elapsed()));
-                    }
-                })
-                .ok()?
-        };
-        Some((
-            ScreenCapture {
-                stop,
-                thread: Some(thread),
-            },
-            track,
-        ))
+        let thread = CaptureThread::spawn("teams-media-screen", move |stop| {
+            while !stop.load(Ordering::Relaxed) {
+                let started = Instant::now();
+                capturer.capture_frame();
+                if permanent_failure.load(Ordering::Relaxed) {
+                    log::warn!("screen capture failed");
+                    failed();
+                    return;
+                }
+                std::thread::sleep(FRAME_INTERVAL.saturating_sub(started.elapsed()));
+            }
+        })?;
+        Some((ScreenCapture(thread), track))
     }
 
-    pub fn stop(mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+    pub fn stop(self) {
+        self.0.stop();
     }
 }

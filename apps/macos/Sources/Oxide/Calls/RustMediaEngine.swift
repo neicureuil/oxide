@@ -1,5 +1,4 @@
 import AVFoundation
-import CoreAudio
 import Observation
 import OxideCore
 import OxideCoreFFI
@@ -45,7 +44,6 @@ final class RustMediaEngine: MediaEngine {
         if let previous = self.callId { close(callId: previous) }
         self.callId = callId
         diagnostics = CallDiagnostics(cameraRequested: video)
-        pcm.muted = muted
         Task {
             let microphone = synthetic ? true : await MediaPermissions.request(.audio)
             guard microphone else {
@@ -80,7 +78,6 @@ final class RustMediaEngine: MediaEngine {
 
     func setMuted(callId: String, muted: Bool) {
         guard self.callId == callId else { return }
-        pcm.muted = muted
         core.setMuted(callId: callId, muted: muted)
     }
 
@@ -143,10 +140,14 @@ final class RustMediaEngine: MediaEngine {
 
     func close(callId: String) {
         guard self.callId == callId else { return }
-        _ = stopLocalRecording()
         core.close(callId: callId)
+        endCall()
+    }
+
+    private func endCall() {
+        _ = stopLocalRecording()
         chosenScreen = nil
-        self.callId = nil
+        callId = nil
         reset()
     }
 
@@ -185,9 +186,7 @@ final class RustMediaEngine: MediaEngine {
             guard callId == self.callId else { return }
             diagnostics.failureReason = reason
             onEvent?(.failed(callId: callId, reason: reason))
-            _ = stopLocalRecording()
-            self.callId = nil
-            reset()
+            endCall()
         case .screenShareStopped(let callId, let reason):
             onEvent?(.screenShareStopped(callId: callId, reason: reason))
         case .cameraStopped(let callId, let reason):
@@ -271,15 +270,10 @@ private final class EventForwarder: MediaListener, @unchecked Sendable {
     }
 }
 
-/// The microphone and the participants into the local recording, unless muted.
+/// The microphone (the engine stops it while muted) and the participants into the local recording.
 private final class RecordingTap: PcmListener, @unchecked Sendable {
-    private let state = OSAllocatedUnfairLock<(mic: LocalRecorder.Input?, remote: LocalRecorder.Input?, muted: Bool)>(
-        initialState: (nil, nil, false))
-
-    var muted: Bool {
-        get { state.withLock { $0.muted } }
-        set { state.withLock { $0.muted = newValue } }
-    }
+    private let state = OSAllocatedUnfairLock<(mic: LocalRecorder.Input?, remote: LocalRecorder.Input?)>(
+        initialState: (nil, nil))
 
     func start(_ recorder: LocalRecorder) {
         state.withLock { $0.mic = recorder.makeInput(); $0.remote = recorder.makeInput() }
@@ -290,8 +284,8 @@ private final class RecordingTap: PcmListener, @unchecked Sendable {
     }
 
     func onPcm(remote: Bool, samples: [Int16], sampleRate: UInt32, channels: UInt32) {
-        let (input, muted) = state.withLock { (remote ? $0.remote : $0.mic, $0.muted) }
-        guard let input, remote || !muted, channels > 0, !samples.isEmpty,
+        let input = state.withLock { remote ? $0.remote : $0.mic }
+        guard let input, channels > 0, !samples.isEmpty,
               let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: Double(sampleRate),
                                          channels: AVAudioChannelCount(channels), interleaved: true)
         else { return }

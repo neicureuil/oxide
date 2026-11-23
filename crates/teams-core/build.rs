@@ -1,6 +1,4 @@
-// With the `media` feature the core links libwebrtc, whose ObjC codec factories live in categories the
-// linker drops without `-ObjC` (cargo doesn't forward it from webrtc-sys). This covers the dylib used for
-// the bindings; the app adds it for the static library in Package.swift.
+// `-ObjC` keeps libwebrtc's ObjC codec categories in the dylib; the app passes it for the static library.
 fn main() {
     let macos = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos");
     if macos && std::env::var_os("CARGO_FEATURE_MEDIA").is_some() {

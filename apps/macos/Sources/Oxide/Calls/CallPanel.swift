@@ -90,8 +90,8 @@ private struct ActiveCallBox: View {
             }
             if call.video && call.phase != .ended {
                 HStack(spacing: 8) {
-                    VideoTile(track: store.media.remoteVideo, mirrored: false, placeholder: call.title)
-                    VideoTile(track: store.media.localVideo, mirrored: true, placeholder: L("ui.call_panel.you"))
+                    VideoTile(feed: store.media.remoteVideo, mirrored: false, placeholder: call.title)
+                    VideoTile(feed: store.media.localVideo, mirrored: true, placeholder: L("ui.call_panel.you"))
                         .frame(width: 160)
                 }
                 .frame(height: 180)
@@ -105,15 +105,15 @@ private struct ActiveCallBox: View {
 }
 
 struct VideoTile: View {
-    let track: VideoFeed?
+    let feed: VideoFeed?
     let mirrored: Bool
     let placeholder: String
     var fit = false
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 10).fill(Color.black)
-            if let track {
-                VideoView(track: track, mirrored: mirrored, fit: fit).clipShape(RoundedRectangle(cornerRadius: 10))
+            if let feed {
+                VideoView(feed: feed, mirrored: mirrored, fit: fit).clipShape(RoundedRectangle(cornerRadius: 10))
             } else {
                 Text(placeholder).font(.figtree(12)).foregroundStyle(.white.opacity(0.7))
             }
@@ -121,19 +121,18 @@ struct VideoTile: View {
     }
 }
 
-/// A WebRTC video track through `AVSampleBufferDisplayLayer`: the prebuilt framework has no macOS video view.
 struct VideoView: NSViewRepresentable {
-    let track: VideoFeed
+    let feed: VideoFeed
     let mirrored: Bool
     var fit = false
 
     func makeNSView(context: Context) -> VideoLayerView {
         let view = VideoLayerView(mirrored: mirrored, fit: fit)
-        view.attach(track)
+        view.attach(feed)
         return view
     }
     func updateNSView(_ view: VideoLayerView, context: Context) {
-        view.attach(track)
+        view.attach(feed)
     }
     static func dismantleNSView(_ view: VideoLayerView, coordinator: ()) {
         view.attach(nil)

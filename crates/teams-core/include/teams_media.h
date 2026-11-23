@@ -1,5 +1,4 @@
-// Video frames of the call media engine (crates/teams-core/src/call_media.rs), outside UniFFI: the planes
-// are handed over without a copy, valid only during the callback.
+// Video frames of the call media engine outside UniFFI: planes valid only during the callback.
 #pragma once
 
 #include <stdint.h>

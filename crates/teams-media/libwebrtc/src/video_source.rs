@@ -93,7 +93,7 @@ pub mod native {
             Self { handle: vs_imp::NativeVideoSource::new_encoded(resolution) }
         }
 
-        /// Teams fork: a source fed natively (the macOS camera), without black keepalive frames.
+        /// Teams fork: fed natively (the macOS camera), without keepalive black frames.
         pub fn new_external(resolution: VideoResolution) -> Self {
             Self { handle: vs_imp::NativeVideoSource::new_external(resolution) }
         }

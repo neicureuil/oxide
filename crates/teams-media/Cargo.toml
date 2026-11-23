@@ -19,5 +19,4 @@ tokio-stream = "0.1"
 libwebrtc = { path = "libwebrtc", features = ["glib-main-loop"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 teams-calling.workspace = true

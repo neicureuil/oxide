@@ -437,7 +437,7 @@ private struct InCallView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Theme.conversation, in: RoundedRectangle(cornerRadius: 14))
                 if call.video && call.camera {
-                    VideoTile(track: store.media.localVideo, mirrored: true, placeholder: L("ui.call_window.you"))
+                    VideoTile(feed: store.media.localVideo, mirrored: true, placeholder: L("ui.call_window.you"))
                         .frame(width: 200, height: 112)
                         .shadow(radius: 6)
                         .padding(12)
@@ -446,7 +446,7 @@ private struct InCallView: View {
         } else if call.phase == .connected {
             CallStage(call: call, layout: layout)
         } else if call.video && call.phase != .ended {
-            VideoTile(track: store.media.localVideo, mirrored: true, placeholder: placeholder)
+            VideoTile(feed: store.media.localVideo, mirrored: true, placeholder: placeholder)
         } else {
             VStack(spacing: 14) {
                 Avatar(name: call.title, id: call.id, size: 96, shape: call.isMeeting ? .square : .round)

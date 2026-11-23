@@ -2,7 +2,6 @@ import AppKit
 import OxideCore
 import SwiftUI
 
-/// A picked screen or window.
 struct ScreenChoice {
     let source: ScreenSourceView
 }

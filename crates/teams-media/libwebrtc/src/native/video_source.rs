@@ -101,18 +101,17 @@ impl NativeVideoSource {
         Self::new_inner(resolution, is_screencast, true)
     }
 
+    /// Teams fork: fed natively (the macOS camera); keepalive black frames would interleave with it.
+    pub fn new_external(resolution: VideoResolution) -> NativeVideoSource {
+        Self::new_inner(resolution, false, false)
+    }
+
     /// Creates a source for pre-encoded access units.
     ///
     /// Unlike [`NativeVideoSource::new`], no raw black-frame keepalive is
     /// injected before the first capture: raw frames would start a real
     /// encoder on a sender meant for the pass-through encoder and corrupt
     /// the encoded stream.
-    /// Teams fork: a source fed natively (the macOS camera), without the black keepalive frames that
-    /// would otherwise interleave with the captured ones.
-    pub fn new_external(resolution: VideoResolution) -> NativeVideoSource {
-        Self::new_inner(resolution, false, false)
-    }
-
     pub fn new_encoded(resolution: VideoResolution) -> NativeVideoSource {
         Self::new_inner(resolution, false, false)
     }

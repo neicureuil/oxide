@@ -18,8 +18,7 @@ pub struct AudioDevice {
     pub input: bool,
 }
 
-/// The current microphones and speakers, defaults excluded. Opens the audio device briefly: call it
-/// from settings, not on every frame.
+/// Microphones and speakers, defaults excluded; opens the audio device briefly, so not per frame.
 pub fn audio_devices() -> Vec<AudioDevice> {
     let factory = PeerConnectionFactory::default();
     if !factory.acquire_platform_adm() {
@@ -59,16 +58,10 @@ pub(crate) fn apply(
 ) {
     let devices = list(factory);
     let find = |choice: &DeviceChoice, input: bool| {
-        devices
-            .iter()
-            .filter(|d| d.input == input)
+        let kind = || devices.iter().filter(move |d| d.input == input);
+        kind()
             .find(|d| d.id == choice.id)
-            .or_else(|| {
-                devices
-                    .iter()
-                    .filter(|d| d.input == input)
-                    .find(|d| d.name == choice.name)
-            })
+            .or_else(|| kind().find(|d| d.name == choice.name))
             .map(|d| d.id.clone())
     };
     if let Some(id) = microphone.and_then(|c| find(c, true)) {

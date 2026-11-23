@@ -185,8 +185,7 @@ fn main() {
                 for path in lib.include_paths {
                     builder.include(path);
                 }
-                // Teams fork: the desktop capturer's XDG portal calls GIO; link it rather than
-                // relying on the app to (upstream expects GTK or the `glib` crate to pull it in).
+                // Teams fork: link GIO for the XDG portal instead of relying on the app to pull it in.
                 println!("cargo:rustc-link-lib=dylib={}", lib_name);
             }
 

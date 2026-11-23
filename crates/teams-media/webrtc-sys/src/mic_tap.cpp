@@ -17,9 +17,7 @@ std::atomic<bool> g_enabled{false};
 
 class MicTap : public webrtc::CustomProcessing {
  public:
-  void Initialize(int sample_rate_hz, int num_channels) override {
-    sample_rate_hz_ = sample_rate_hz;
-  }
+  void Initialize(int sample_rate_hz, int num_channels) override {}
 
   void Process(webrtc::AudioBuffer* audio) override {
     if (!g_enabled.load(std::memory_order_relaxed))
@@ -46,7 +44,6 @@ class MicTap : public webrtc::CustomProcessing {
       webrtc::AudioProcessing::RuntimeSetting setting) override {}
 
  private:
-  int sample_rate_hz_ = 48000;
   std::vector<int16_t> samples_;
 };
 

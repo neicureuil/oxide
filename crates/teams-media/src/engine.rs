@@ -1,9 +1,4 @@
-//! The call's peer connection, driven by one actor task: commands from the app and callbacks from
-//! libwebrtc are messages on the same queue, so the state below needs no lock.
-//!
-//! A port of the Swift `WebRTCMediaEngine`: unified plan, max-bundle, no trickle ICE, every camera line
-//! and the sharing line offered up front, rollback when the service rejects our renegotiation, ICE
-//! restarts with backoff after a drop.
+//! The call's peer connection, run by one actor: app commands and libwebrtc callbacks share its queue, so no lock.
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -58,8 +53,7 @@ impl MediaEngine {
         Self::start(listener, false)
     }
 
-    /// An engine without audio device: a tone for a microphone, the participants' audio discarded.
-    /// For tests and demo mode, where no device may exist.
+    /// No device: a tone for a microphone, a test pattern for a camera; for tests.
     pub fn synthetic(listener: Arc<dyn MediaListener>) -> Self {
         Self::start(listener, true)
     }
@@ -67,8 +61,7 @@ impl MediaEngine {
     fn start(listener: Arc<dyn MediaListener>, synthetic: bool) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let sinks = Sinks::default();
-        let mut actor = Actor::new(listener, tx.clone(), sinks.clone());
-        actor.synthetic = synthetic;
+        let actor = Actor::new(listener, tx.clone(), sinks.clone(), synthetic);
         let thread = std::thread::Builder::new()
             .name("teams-media".into())
             .spawn(move || {
@@ -92,8 +85,7 @@ impl MediaEngine {
         let _ = self.tx.send(Msg::Command(command));
     }
 
-    /// Creates the peer connection and makes an offer, or answers `remote_offer`; the SDP comes back as
-    /// [`MediaEvent::LocalDescription`]. Closes the previous call, if any.
+    /// Offers, or answers `remote_offer`; the SDP comes back as [`MediaEvent::LocalDescription`].
     pub fn prepare(&self, options: PrepareOptions) {
         self.send(Command::Prepare(options));
     }
@@ -189,7 +181,6 @@ impl Drop for MediaEngine {
     }
 }
 
-#[derive(Debug)]
 enum Command {
     Prepare(PrepareOptions),
     RemoteDescription {
@@ -236,14 +227,7 @@ enum Command {
     },
 }
 
-impl std::fmt::Debug for dyn PcmSink {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("PcmSink")
-    }
-}
-
-/// Everything the actor reacts to. Internal messages carry the call generation they were made for,
-/// so a callback from a closed call can't touch the next one.
+/// Internal messages carry their call's generation, so a late callback can't touch the next call.
 enum Msg {
     Command(Command),
     GatheringComplete(u64),
@@ -259,10 +243,9 @@ enum Msg {
     Shutdown,
 }
 
-/// What `waitForGathering` sends once complete.
+/// What `wait_for_gathering` sends once complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pending {
-    /// Nothing to send.
     None,
     /// Our offer, or our answer to an incoming call.
     Local,
@@ -294,15 +277,16 @@ struct Call {
     reconnect_deadline: Option<Instant>,
     reconnect_attempts: u32,
     reconnect_next: Instant,
-    /// Frame size of our camera and screen, for the scale; the mixer's last bounds by mid.
+    /// Our camera's and screen's frame size, to scale to the mixer's bounds.
     frame_sizes: HashMap<VideoSlot, (u32, u32)>,
+    /// The mixer's last bounds by mid, applied again when a frame size changes.
     send_limits: HashMap<String, SendLimits>,
     pumps: Vec<tokio::task::JoinHandle<()>>,
     /// Participants' audio to the PCM sink, while recording.
     pcm_pumps: Vec<tokio::task::JoinHandle<()>>,
     timers: Vec<tokio::task::JoinHandle<()>>,
-    /// When each CSRC was last heard, and its packet timestamp at the previous poll.
     last_heard: HashMap<u32, Instant>,
+    /// Each CSRC's packet timestamp at the previous poll: it moves only while that voice is mixed in.
     source_stamps: HashMap<u32, i64>,
     speaking: BTreeSet<u32>,
     local_speaking: bool,
@@ -318,12 +302,17 @@ struct Actor {
     pcm: Option<Arc<dyn PcmSink>>,
     call: Option<Call>,
     generation: u64,
-    /// No audio device: see [`MediaEngine::synthetic`].
+    /// See [`MediaEngine::synthetic`].
     synthetic: bool,
 }
 
 impl Actor {
-    fn new(listener: Listener, tx: mpsc::UnboundedSender<Msg>, sinks: Sinks) -> Self {
+    fn new(
+        listener: Listener,
+        tx: mpsc::UnboundedSender<Msg>,
+        sinks: Sinks,
+        synthetic: bool,
+    ) -> Self {
         Self {
             listener,
             tx,
@@ -332,7 +321,7 @@ impl Actor {
             pcm: None,
             call: None,
             generation: 0,
-            synthetic: false,
+            synthetic,
         }
     }
 
@@ -353,22 +342,24 @@ impl Actor {
         self.listener.on_event(event);
     }
 
-    /// The current call when `call_id` names it.
     fn call_mut(&mut self, call_id: &str) -> Option<&mut Call> {
         self.call.as_mut().filter(|c| c.id == call_id)
     }
 
-    /// The current call when `generation` is its own.
     fn current(&mut self, generation: u64) -> Option<&mut Call> {
         self.call.as_mut().filter(|c| c.generation == generation)
     }
 
-    fn after(&self, delay: Duration, msg: Msg) -> tokio::task::JoinHandle<()> {
+    /// Sends `msg` after `delay`, unless the current call ends first.
+    fn schedule(&mut self, delay: Duration, msg: Msg) {
         let tx = self.tx.clone();
-        tokio::spawn(async move {
+        let timer = tokio::spawn(async move {
             tokio::time::sleep(delay).await;
             let _ = tx.send(msg);
-        })
+        });
+        if let Some(call) = self.call.as_mut() {
+            call.timers.push(timer);
+        }
     }
 
     fn every(
@@ -391,7 +382,6 @@ impl Actor {
     }
 
     async fn command(&mut self, command: Command) {
-        log::debug!("command {command:?}");
         match command {
             Command::Prepare(options) => self.prepare(options).await,
             Command::RemoteDescription {
@@ -403,7 +393,7 @@ impl Actor {
             Command::OfferRejected { call_id, retry } => self.offer_rejected(&call_id, retry).await,
             Command::RestartIce { call_id } => {
                 if self.call_mut(&call_id).is_some() {
-                    self.restart_ice().await;
+                    self.renegotiate("ICE restart", true).await;
                 }
             }
             Command::Muted { call_id, muted } => {
@@ -434,8 +424,8 @@ impl Actor {
             } => self.set_screen_share(&call_id, on, source).await,
             Command::SendLimits { call_id, limits } => {
                 if let Some(call) = self.call_mut(&call_id) {
-                    call.send_limits.insert(limits.mid.clone(), limits.clone());
-                    apply_limits(call, &limits.mid, limits.keyframe);
+                    apply_limits(call, &limits, limits.keyframe);
+                    call.send_limits.insert(limits.mid.clone(), limits);
                 }
             }
             Command::Devices(devices) => {
@@ -522,7 +512,7 @@ impl Actor {
                     MediaStreamTrack::Video(video) => {
                         let Some(mid) = mid else { return };
                         call.pumps
-                            .push(pump(video, VideoSlot::Remote(mid.clone()), sinks));
+                            .push(pump(video, VideoSlot::Remote(mid.clone()), sinks, None));
                         if call.remote_videos.insert(mid.clone()) {
                             let id = call.id.clone();
                             self.emit(MediaEvent::Video {
@@ -536,7 +526,6 @@ impl Actor {
             }
             Msg::ReconnectTick(generation) => self.reconnect_tick(generation).await,
             Msg::StatsTick(generation) => {
-                let shown = self.sinks.shown();
                 let Some(call) = self.current(generation) else {
                     return;
                 };
@@ -550,9 +539,8 @@ impl Actor {
                 let sample = sample(&report);
                 call.diagnostics.merge(&sample);
                 let video = crate::stats::video_summary(&report);
-                let camera = call.camera.as_ref().and_then(|c| c.captured());
-                if !video.is_empty() || camera.is_some() {
-                    log::info!("video camera={camera:?} shown[{shown}] {video}");
+                if !video.is_empty() {
+                    log::info!("video {video}");
                 }
                 let (id, diagnostics) = (call.id.clone(), call.diagnostics.clone());
                 self.emit(MediaEvent::Diagnostics {
@@ -574,21 +562,19 @@ impl Actor {
                 let Some(mid) = line.and_then(|l| l.mid()) else {
                     return;
                 };
-                if call.send_limits.contains_key(&mid) {
-                    apply_limits(call, &mid, false);
+                if let Some(limits) = call.send_limits.get(&mid) {
+                    apply_limits(call, limits, false);
                 } else if slot == VideoSlot::Screen {
                     // Before the mixer says anything, the sharing line's own bounds.
                     let limits = SendLimits {
-                        mid: mid.clone(),
+                        mid,
                         sharing: true,
                         max_fs: SCREEN_MAX_FS,
                         max_fps: SCREEN_MAX_FPS,
                         max_bitrate: 0,
                         keyframe: true,
                     };
-                    call.send_limits.insert(mid.clone(), limits);
-                    apply_limits(call, &mid, true);
-                    call.send_limits.remove(&mid);
+                    apply_limits(call, &limits, true);
                 }
             }
             Msg::CaptureFailed(generation, slot) => {
@@ -613,8 +599,6 @@ impl Actor {
         }
     }
 
-    // MARK: Setup and teardown
-
     async fn prepare(&mut self, options: PrepareOptions) {
         if let Some(call) = self.call.take() {
             self.teardown(call);
@@ -629,8 +613,7 @@ impl Actor {
             options.remote_offer.is_some()
         );
 
-        // Built for the call and dropped by `close`: libwebrtc's threads, codecs and audio device live
-        // only during calls.
+        // Per call: libwebrtc's threads, codecs and audio device live only while a call does.
         let factory = PeerConnectionFactory::default();
         if !self.synthetic {
             if !factory.acquire_platform_adm() {
@@ -710,14 +693,12 @@ impl Actor {
         add_track(&pc, MediaStreamTrack::Audio(audio), offering);
         if options.video {
             if let Some(track) = self.start_camera(&mut call) {
-                let line = add_track(&pc, MediaStreamTrack::Video(track), offering);
-                choose_camera_encoder(line.as_ref());
-                call.camera_line = line;
+                call.camera_line = add_track(&pc, MediaStreamTrack::Video(track), offering);
             }
         }
         if offering {
             // Like the web client, always offer every camera line and the sharing line: the mixer rejects missing ones.
-            let first = if call.camera_track.is_some() { 1 } else { 0 };
+            let first = u32::from(call.camera_track.is_some());
             for _ in first..options.camera_lines.max(1) {
                 let line = add_receive_video(&pc);
                 if call.camera_line.is_none() {
@@ -730,18 +711,8 @@ impl Actor {
 
         let description = match options.remote_offer {
             Some(offer) => {
-                let offer = match SessionDescription::parse(&send_profile(&offer), SdpType::Offer) {
-                    Ok(offer) => offer,
-                    Err(e) => {
-                        return self.fail(format!(
-                            "{}{}",
-                            text("remote_offer_rejected"),
-                            e.description
-                        ));
-                    }
-                };
-                if let Err(e) = pc.set_remote_description(offer).await {
-                    return self.fail(format!("{}{}", text("remote_offer_rejected"), e.message));
+                if let Err(e) = set_remote(&pc, &offer, SdpType::Offer).await {
+                    return self.fail_with("remote_offer_rejected", e);
                 }
                 pc.create_answer(AnswerOptions::default()).await
             }
@@ -752,25 +723,14 @@ impl Actor {
         }
         let description = match description {
             Ok(description) => description,
-            Err(e) => {
-                return self.fail(format!(
-                    "{}{}",
-                    text("couldn_t_create_the_local_media"),
-                    e.message
-                ));
-            }
+            Err(e) => return self.fail_with("couldn_t_create_the_local_media", e.message),
         };
         if let Err(e) = pc.set_local_description(description).await {
-            return self.fail(format!(
-                "{}{}",
-                text("local_description_rejected"),
-                e.message
-            ));
+            return self.fail_with("local_description_rejected", e.message);
         }
         self.wait_for_gathering(Pending::Local);
     }
 
-    /// libwebrtc callbacks become messages for the actor.
     fn observe(&self, pc: &PeerConnection, generation: u64) {
         let tx = self.tx.clone();
         pc.on_ice_gathering_state_change(Some(Box::new(move |state| {
@@ -835,7 +795,10 @@ impl Actor {
         });
     }
 
-    /// Ends the current call on `reason`.
+    fn fail_with(&mut self, key: &str, detail: impl std::fmt::Display) {
+        self.fail(format!("{}{detail}", text(key)));
+    }
+
     fn fail(&mut self, reason: String) {
         let Some(mut call) = self.call.take() else {
             return;
@@ -850,8 +813,6 @@ impl Actor {
         self.teardown(call);
     }
 
-    // MARK: Negotiation
-
     /// NGC takes no trickled candidates: send once gathering completes, or after 3 s with what was gathered.
     fn wait_for_gathering(&mut self, pending: Pending) {
         let Some(call) = self.call.as_mut() else {
@@ -864,10 +825,7 @@ impl Actor {
             return;
         }
         let msg = Msg::GatheringTimeout(call.generation, call.negotiation);
-        let timer = self.after(GATHERING_LIMIT, msg);
-        if let Some(call) = self.call.as_mut() {
-            call.timers.push(timer);
-        }
+        self.schedule(GATHERING_LIMIT, msg);
     }
 
     fn send_description(&mut self) {
@@ -913,18 +871,12 @@ impl Actor {
         } else {
             SdpType::Answer
         };
-        let result = match SessionDescription::parse(&send_profile(sdp), kind) {
-            Ok(description) => pc
-                .set_remote_description(description)
-                .await
-                .map_err(|e| e.message),
-            Err(e) => Err(e.description),
-        };
+        let result = set_remote(&pc, sdp, kind).await;
         if self.current(generation).is_none() {
             return;
         }
         match result {
-            Err(e) => self.fail(format!("{}{e}", text("media_answer_rejected"))),
+            Err(e) => self.fail_with("media_answer_rejected", e),
             Ok(()) => {
                 log::info!("remote SDP accepted");
                 if !provisional {
@@ -944,13 +896,8 @@ impl Actor {
         {
             return;
         }
-        let timer = self.after(
-            CONNECT_LIMIT,
-            Msg::ConnectTimeout(call.generation, call.negotiation),
-        );
-        if let Some(call) = self.call.as_mut() {
-            call.timers.push(timer);
-        }
+        let msg = Msg::ConnectTimeout(call.generation, call.negotiation);
+        self.schedule(CONNECT_LIMIT, msg);
     }
 
     /// A new local offer for the call as it now is: the core sends it as a renegotiation.
@@ -971,8 +918,7 @@ impl Actor {
         }
     }
 
-    /// Our own offer may still be pending, e.g. a camera renegotiation the service refused: a connection
-    /// takes one offer at a time, so ours yields to the service's instead of failing the call.
+    /// A pending offer of ours (e.g. a refused camera) yields to the service's: one offer at a time.
     async fn remote_offer(&mut self, call_id: &str, sdp: &str) {
         let Some(call) = self.call_mut(call_id) else {
             return;
@@ -981,18 +927,12 @@ impl Actor {
         if !self.roll_back(&pc, generation).await {
             return;
         }
-        let result = match SessionDescription::parse(&send_profile(sdp), SdpType::Offer) {
-            Ok(offer) => pc
-                .set_remote_description(offer)
-                .await
-                .map_err(|e| e.message),
-            Err(e) => Err(e.description),
-        };
+        let result = set_remote(&pc, sdp, SdpType::Offer).await;
         if self.current(generation).is_none() {
             return;
         }
         if let Err(e) = result {
-            return self.fail(format!("{}{e}", text("renegotiation_rejected")));
+            return self.fail_with("renegotiation_rejected", e);
         }
         let Ok(answer) = pc.create_answer(AnswerOptions::default()).await else {
             return;
@@ -1005,8 +945,7 @@ impl Actor {
         }
     }
 
-    /// The service rejected our renegotiation: drop our offer, then offer again, or put the senders back
-    /// as last negotiated, like the web client's `rejectNegotiation`.
+    /// Drops the refused offer, then offers again or restores the senders (web client's `rejectNegotiation`).
     async fn offer_rejected(&mut self, call_id: &str, retry: bool) {
         let Some(call) = self.call_mut(call_id) else {
             return;
@@ -1044,7 +983,7 @@ impl Actor {
             return false;
         }
         if let Err(e) = result {
-            self.fail(format!("{}{e}", text("renegotiation_rejected")));
+            self.fail_with("renegotiation_rejected", e);
             return false;
         }
         true
@@ -1060,8 +999,7 @@ impl Actor {
         if call.camera_track.is_some() && !sends(call.camera_line.as_ref()) {
             stop_camera(call);
             if let Some(line) = &call.camera_line {
-                let _ = line.sender().set_track(None);
-                let _ = line.set_direction(RtpTransceiverDirection::RecvOnly);
+                stop_sending(line);
             }
             events.push(MediaEvent::Video {
                 call_id: id.clone(),
@@ -1076,8 +1014,7 @@ impl Actor {
         if call.screen_track.is_some() && !sends(call.sharing_line.as_ref()) {
             stop_screen(call);
             if let Some(line) = &call.sharing_line {
-                let _ = line.sender().set_track(None);
-                let _ = line.set_direction(RtpTransceiverDirection::RecvOnly);
+                stop_sending(line);
             }
             events.push(MediaEvent::Video {
                 call_id: id.clone(),
@@ -1093,12 +1030,6 @@ impl Actor {
             self.emit(event);
         }
     }
-
-    async fn restart_ice(&mut self) {
-        self.renegotiate("ICE restart", true).await;
-    }
-
-    // MARK: Connection
 
     async fn connection_state(&mut self, generation: u64, state: PeerConnectionState) {
         log::info!("connection state={state:?}");
@@ -1140,8 +1071,7 @@ impl Actor {
         }
     }
 
-    /// The connection failed after being up, e.g. a Wi-Fi drop: restart ICE, again after 1 s, 2 s… up to
-    /// 5 s between attempts, and end the call only if nothing comes back within 90 s, like the web client.
+    /// After a drop, ICE restarts 1 s, 2 s… 5 s apart, for up to 90 s, like the web client.
     fn reconnect(&mut self, generation: u64) {
         let Some(call) = self.current(generation) else {
             return;
@@ -1184,20 +1114,15 @@ impl Actor {
             call.reconnect_next =
                 now + Duration::from_secs(u64::from(call.reconnect_attempts.min(5)));
             log::info!("reconnect attempt {}", call.reconnect_attempts);
-            self.restart_ice().await;
+            self.renegotiate("ICE restart", true).await;
         }
         let Some(call) = self.current(generation) else {
             return;
         };
         if call.reconnect_deadline.is_some() {
-            let timer = self.after(Duration::from_millis(500), Msg::ReconnectTick(generation));
-            if let Some(call) = self.current(generation) {
-                call.timers.push(timer);
-            }
+            self.schedule(Duration::from_millis(500), Msg::ReconnectTick(generation));
         }
     }
-
-    // MARK: Audio
 
     /// Every 250 ms: the CSRCs the mixer currently mixes in, and our own input level.
     async fn poll_speakers(&mut self, generation: u64) {
@@ -1216,7 +1141,6 @@ impl Actor {
             .flat_map(|r| r.sources())
             .filter(|s| s.csrc)
         {
-            // A source stays listed 10 s after its last packet: only a moving timestamp means it is mixed in now.
             let previous = call
                 .source_stamps
                 .insert(source.source_id, source.timestamp_us);
@@ -1230,7 +1154,6 @@ impl Actor {
         let speaking: BTreeSet<u32> = call.last_heard.keys().copied().collect();
         let id = call.id.clone();
         if speaking != call.speaking {
-            log::debug!("speaking CSRCs={speaking:?}");
             call.speaking = speaking.clone();
             self.emit(MediaEvent::Speaking {
                 call_id: id.clone(),
@@ -1256,8 +1179,6 @@ impl Actor {
             });
         }
     }
-
-    // MARK: Video
 
     fn start_camera(&self, call: &mut Call) -> Option<RtcVideoTrack> {
         let tx = self.tx.clone();
@@ -1296,7 +1217,7 @@ impl Actor {
         Some(track)
     }
 
-    /// Mid-call, the camera line changes direction and renegotiates, like the web client's `startRenegotiationAsync`.
+    /// The camera line changes direction and renegotiates (web client's `startRenegotiationAsync`).
     async fn set_camera(&mut self, call_id: &str, on: bool) {
         let Some(call) = self.call_mut(call_id) else {
             return;
@@ -1329,17 +1250,12 @@ impl Actor {
                 return;
             };
             track.set_enabled(true);
-            let _ = line
-                .sender()
-                .set_track(Some(MediaStreamTrack::Video(track)));
-            let _ = line.set_direction(RtpTransceiverDirection::SendRecv);
-            choose_camera_encoder(Some(&line));
+            send_on(&line, track, RtpTransceiverDirection::SendRecv);
             call.camera_line = Some(line);
         } else {
             let id = call.id.clone();
             stop_camera(call);
-            let _ = line.sender().set_track(None);
-            let _ = line.set_direction(RtpTransceiverDirection::RecvOnly);
+            stop_sending(&line);
             call.camera_line = Some(line);
             self.emit(MediaEvent::Video {
                 call_id: id,
@@ -1354,7 +1270,10 @@ impl Actor {
     async fn set_screen_share(&mut self, call_id: &str, on: bool, source: Option<ScreenSource>) {
         let tx = self.tx.clone();
         let sinks = self.sinks.clone();
-        let Some(call) = self.call_mut(call_id) else {
+        let Some(call) = self
+            .call_mut(call_id)
+            .filter(|c| c.pc.signaling_state() == SignalingState::Stable)
+        else {
             if on {
                 let reason = Some(text("the_media_connection_isn_t_ready"));
                 self.emit(MediaEvent::ScreenShareStopped {
@@ -1364,16 +1283,6 @@ impl Actor {
             }
             return;
         };
-        if call.pc.signaling_state() != SignalingState::Stable {
-            if on {
-                let reason = Some(text("the_media_connection_isn_t_ready"));
-                self.emit(MediaEvent::ScreenShareStopped {
-                    call_id: call_id.into(),
-                    reason,
-                });
-            }
-            return;
-        }
         let id = call.id.clone();
         if on {
             stop_screen(call);
@@ -1401,21 +1310,14 @@ impl Actor {
             };
             call.screen = Some(capture);
             call.screen_track = Some(track.clone());
-            // Send-only like the web client: offered both ways, the mixer answers `sendonly` and never takes our screen.
+            // Send-only like the web client: offered both ways, the mixer never takes our screen.
             match video_line(call, true) {
                 Some(line) => {
-                    let _ = line
-                        .sender()
-                        .set_track(Some(MediaStreamTrack::Video(track)));
-                    let _ = line.set_direction(RtpTransceiverDirection::SendOnly);
+                    send_on(&line, track, RtpTransceiverDirection::SendOnly);
                     call.sharing_line = Some(line);
                 }
                 None => {
-                    let init = RtpTransceiverInit {
-                        direction: RtpTransceiverDirection::SendOnly,
-                        stream_ids: vec!["local".into()],
-                        send_encodings: vec![RtpEncodingParameters::default()],
-                    };
+                    let init = send_init(RtpTransceiverDirection::SendOnly);
                     call.sharing_line = call
                         .pc
                         .add_transceiver(MediaStreamTrack::Video(track), init)
@@ -1432,8 +1334,7 @@ impl Actor {
             let Some(line) = video_line(call, true) else {
                 return;
             };
-            let _ = line.sender().set_track(None);
-            let _ = line.set_direction(RtpTransceiverDirection::RecvOnly);
+            stop_sending(&line);
             self.emit(MediaEvent::Video {
                 call_id: id,
                 slot: VideoSlot::Screen,
@@ -1460,8 +1361,7 @@ fn rtc_ice_server(server: &IceServer) -> RtcIceServer {
     }
 }
 
-/// Leaves every transceiver's direction alone (libwebrtc's legacy `offerToReceive*` would turn
-/// receive-only lines inactive).
+/// `None`: libwebrtc's legacy `offerToReceive*` would turn receive-only lines inactive.
 fn offer_options(ice_restart: bool) -> OfferOptions {
     OfferOptions {
         ice_restart,
@@ -1477,11 +1377,7 @@ fn add_track(
     offering: bool,
 ) -> Option<RtpTransceiver> {
     if offering {
-        let init = RtpTransceiverInit {
-            direction: RtpTransceiverDirection::SendRecv,
-            stream_ids: vec!["local".into()],
-            send_encodings: vec![RtpEncodingParameters::default()],
-        };
+        let init = send_init(RtpTransceiverDirection::SendRecv);
         return pc.add_transceiver(track, init).ok();
     }
     let id = track.id();
@@ -1500,34 +1396,38 @@ fn add_receive_video(pc: &PeerConnection) -> Option<RtpTransceiver> {
     pc.add_transceiver_for_media(MediaType::Video, init).ok()
 }
 
-/// The camera's encoder: the hardware one by default. `OXIDE_VIDEO_ENCODER=software` switches to
-/// OpenH264 to compare (it showed the once-a-second keyframes come from VideoToolbox on macOS).
-fn choose_camera_encoder(line: Option<&RtpTransceiver>) {
-    use libwebrtc::rtp_sender::VideoEncoderBackend;
-    let Some(line) = line else { return };
-    if std::env::var("OXIDE_VIDEO_ENCODER").as_deref() == Ok("software") {
-        log::info!("camera encoder: software");
-        line.sender()
-            .set_video_encoder_backend(VideoEncoderBackend::Software);
+fn send_init(direction: RtpTransceiverDirection) -> RtpTransceiverInit {
+    RtpTransceiverInit {
+        direction,
+        stream_ids: vec!["local".into()],
+        send_encodings: vec![RtpEncodingParameters::default()],
     }
 }
 
-/// The H264 profile we send. Teams asks for Constrained Baseline (42C02A), but LiveKit's VideoToolbox
-/// encoder only enables its low-latency rate control for High profiles; in Baseline it runs in its
-/// recording mode and emits a keyframe every second, which blurs our camera for the others. Teams
-/// clients decode Constrained High (checked on a real call), so on macOS the remote side's H264 lines
-/// are read as Constrained High. `OXIDE_H264_SEND_PROFILE=baseline` keeps what Teams said; the software
-/// encoder (`OXIDE_VIDEO_ENCODER=software`) has no such mode and keeps it too.
+fn send_on(line: &RtpTransceiver, track: RtcVideoTrack, direction: RtpTransceiverDirection) {
+    let _ = line
+        .sender()
+        .set_track(Some(MediaStreamTrack::Video(track)));
+    let _ = line.set_direction(direction);
+}
+
+fn stop_sending(line: &RtpTransceiver) {
+    let _ = line.sender().set_track(None);
+    let _ = line.set_direction(RtpTransceiverDirection::RecvOnly);
+}
+
+/// Parses and applies the remote side's SDP, read with the H264 profile we send.
+async fn set_remote(pc: &PeerConnection, sdp: &str, kind: SdpType) -> Result<(), String> {
+    let description =
+        SessionDescription::parse(&send_profile(sdp), kind).map_err(|e| e.description)?;
+    pc.set_remote_description(description)
+        .await
+        .map_err(|e| e.message)
+}
+
+/// macOS: Constrained High instead of Teams' Baseline, as VideoToolbox rate-controls for calls only in High.
 fn send_profile(sdp: &str) -> String {
-    let baseline = match std::env::var("OXIDE_H264_SEND_PROFILE").as_deref() {
-        Ok("baseline") => true,
-        Ok("high") => false,
-        _ => {
-            !cfg!(target_os = "macos")
-                || std::env::var("OXIDE_VIDEO_ENCODER").as_deref() == Ok("software")
-        }
-    };
-    if baseline {
+    if !cfg!(target_os = "macos") {
         return sdp.to_string();
     }
     sdp.replace("profile-level-id=42C02A", "profile-level-id=640C2A")
@@ -1594,12 +1494,9 @@ fn stop_screen(call: &mut Call) {
     call.frame_sizes.remove(&VideoSlot::Screen);
 }
 
-/// Web client's `updateEncodingsWithCaps` / `generateKeyFrameIfNeeded`: scale to the mixer's frame size,
-/// screens capped at 8160 fs and 15 fps.
-fn apply_limits(call: &Call, mid: &str, keyframe: bool) {
-    let Some(limits) = call.send_limits.get(mid) else {
-        return;
-    };
+/// Web client's `updateEncodingsWithCaps` / `generateKeyFrameIfNeeded`, screens capped at 8160 fs, 15 fps.
+fn apply_limits(call: &Call, limits: &SendLimits, keyframe: bool) {
+    let mid = limits.mid.as_str();
     let Some(line) = call
         .pc
         .transceivers()
@@ -1623,15 +1520,13 @@ fn apply_limits(call: &Call, mid: &str, keyframe: bool) {
     if width == 0 {
         return;
     }
-    let max_fs = if limits.sharing {
-        limits.max_fs.min(SCREEN_MAX_FS)
+    let (max_fs, fps) = if limits.sharing {
+        (
+            limits.max_fs.min(SCREEN_MAX_FS),
+            limits.max_fps.min(SCREEN_MAX_FPS),
+        )
     } else {
-        limits.max_fs
-    };
-    let fps = if limits.sharing {
-        limits.max_fps.min(SCREEN_MAX_FPS)
-    } else {
-        limits.max_fps
+        (limits.max_fs, limits.max_fps)
     };
     let scale = scale_down(width, height, max_fs);
     let mut parameters = sender.parameters();

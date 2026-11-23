@@ -101,21 +101,19 @@ async fn offer_and_answer_through_ngc_connect() {
     connected(&mut callee).await;
 
     // The callee's tone reaches the caller.
-    let received = next(&mut caller, |e| match e {
+    next(&mut caller, |e| match e {
         MediaEvent::Diagnostics { diagnostics, .. } if diagnostics.audio_packets_received > 0 => {
-            Some(diagnostics)
+            Some(())
         }
         _ => None,
     })
     .await;
-    assert!(received.audio_packets_received > 0);
 
     // An ICE restart renegotiates; the service rejecting it rolls back without ending the call.
     caller.engine.restart_ice("c");
     let restart = local_description(&mut caller).await;
     assert_ne!(restart, offer);
     caller.engine.offer_rejected("c", false);
-    // The call carries on after the rollback.
     next(&mut caller, |e| {
         matches!(e, MediaEvent::Diagnostics { .. }).then_some(())
     })
@@ -154,7 +152,7 @@ async fn service_renegotiation_is_answered() {
         _ => None,
     })
     .await;
-    let after = next(&mut caller, |e| match e {
+    next(&mut caller, |e| match e {
         MediaEvent::Diagnostics { diagnostics, .. }
             if diagnostics.audio_packets_received > before =>
         {
@@ -163,13 +161,11 @@ async fn service_renegotiation_is_answered() {
         _ => None,
     })
     .await;
-    assert_eq!(after, ());
     caller.engine.close("r");
     callee.engine.close("r");
 }
 
-/// The caller's camera keeps reaching the callee for seconds, through the platform decoder and the
-/// frame delivery the apps use (a leaked frame per delivery froze it after a second on macOS).
+/// Frames keep coming for seconds (a leaked buffer per delivery froze the macOS camera after one).
 #[tokio::test(flavor = "multi_thread")]
 async fn camera_keeps_flowing_to_the_other_side() {
     use std::sync::atomic::{AtomicUsize, Ordering};

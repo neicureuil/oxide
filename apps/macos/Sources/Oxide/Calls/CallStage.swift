@@ -229,7 +229,7 @@ private struct StageTileView: View, Equatable {
         Group {
             if tile.isScreen, let video = tile.video {
                 ZStack(alignment: .topLeading) {
-                    VideoTile(track: video, mirrored: false, placeholder: L("ui.call_stage.screen_sharing"), fit: true)
+                    VideoTile(feed: video, mirrored: false, placeholder: L("ui.call_stage.screen_sharing"), fit: true)
                     Label(tile.name, systemImage: "rectangle.on.rectangle")
                         .font(.figtree(small ? 11 : 12, .semibold)).lineLimit(1)
                         .padding(.horizontal, 8).padding(.vertical, 4)
@@ -283,7 +283,7 @@ struct ParticipantTile: View {
             ZStack(alignment: .bottomLeading) {
                 RoundedRectangle(cornerRadius: 12).fill(Theme.conversation)
                 if let video {
-                    VideoView(track: video, mirrored: mirrored).clipShape(RoundedRectangle(cornerRadius: 12))
+                    VideoView(feed: video, mirrored: mirrored).clipShape(RoundedRectangle(cornerRadius: 12))
                 } else {
                     ZStack {
                         if speaking {

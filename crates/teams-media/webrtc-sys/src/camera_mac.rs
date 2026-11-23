@@ -13,8 +13,6 @@ pub mod ffi {
             unique_id: String,
             name: String,
         ) -> UniquePtr<MacCamera>;
-        fn stop(self: &MacCamera);
-        fn frames(self: &MacCamera) -> u64;
     }
 }
 

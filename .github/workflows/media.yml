@@ -1,5 +1,4 @@
-# The call media engine (crates/teams-media, libwebrtc) on the three desktop systems: build and the
-# loopback tests (synthetic audio, no device needed).
+# crates/teams-media on the three desktop systems: build and device-free loopback tests.
 name: Media
 
 on:
@@ -20,8 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # libwebrtc's prebuilt hermetic libc++ needs clang 21 or later; the desktop capturer needs X11,
-      # DRM/GBM and GLib headers, the camera V4L2, the audio device PulseAudio/ALSA.
+      # libwebrtc's hermetic libc++ needs clang ≥ 21; capture and audio need these headers.
       - name: Linux dependencies
         if: runner.os == 'Linux'
         run: |

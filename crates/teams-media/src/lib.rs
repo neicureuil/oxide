@@ -1,10 +1,4 @@
-//! Media of a Teams call on libwebrtc: one bundled peer connection, the microphone and speakers of the
-//! platform audio device, Opus, H264 cameras and a shared screen.
-//!
-//! The engine speaks standard WebRTC SDP; `teams_calling::sdp` converts it to and from Teams' NGC SDP.
-//! It mirrors what the core asks through `Effect::Media*` and answers with [`MediaEvent`]s that map
-//! one to one onto `CallAction`s. Everything runs on the engine's own threads: methods only queue a
-//! command, and events and video frames come back on those threads.
+//! A Teams call's media on libwebrtc, in standard SDP (`teams_calling::sdp` converts to Teams' NGC).
 
 mod audio;
 mod camera;
@@ -149,7 +143,7 @@ pub trait PcmSink: Send + Sync {
 
 pub(crate) type Listener = Arc<dyn MediaListener>;
 
-/// Localized failure texts, shared with the Swift engine.
+/// Failure texts from the shared catalog, as the shells show them.
 pub(crate) fn text(key: &str) -> String {
     teams_i18n::t(&format!("ui.media_engine.{key}")).to_string()
 }

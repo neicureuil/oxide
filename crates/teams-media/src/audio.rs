@@ -15,12 +15,10 @@ use crate::PcmSink;
 /// Rate the participants' audio is resampled to for the sink.
 const REMOTE_RATE: i32 = 48_000;
 
-/// Sends the processed microphone to `sink`, or stops.
 pub(crate) fn set_mic_tap(sink: Option<Arc<dyn PcmSink>>) {
     libwebrtc::native::set_mic_tap(sink.map(|sink| {
-        let tap: libwebrtc::native::MicTapSink =
-            Arc::new(move |samples, rate, channels| sink.on_pcm(false, samples, rate, channels));
-        tap
+        Arc::new(move |samples: &[i16], rate, channels| sink.on_pcm(false, samples, rate, channels))
+            as libwebrtc::native::MicTapSink
     }));
 }
 

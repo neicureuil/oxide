@@ -9,7 +9,6 @@ APP="target/Oxide.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/Fonts"
 cp "$BIN" "$APP/Contents/MacOS/Oxide"
-# libwebrtc is linked statically into the core (crates/teams-media): no framework to embed.
 cp apps/macos/Resources/Fonts/* "$APP/Contents/Resources/Fonts/"
 cp apps/macos/Resources/AppIcon.icns "$APP/Contents/Resources/"
 # The version lives in Cargo.toml's [workspace.package]; the build number counts commits (override with BUILD_NUMBER).

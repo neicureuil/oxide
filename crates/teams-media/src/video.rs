@@ -4,7 +4,7 @@ use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 
 use libwebrtc::prelude::RtcVideoTrack;
-use libwebrtc::video_frame::{BoxVideoFrame, VideoBuffer, VideoRotation};
+use libwebrtc::video_frame::{VideoBuffer, VideoRotation};
 use libwebrtc::video_stream::native::NativeVideoStream;
 use tokio_stream::StreamExt;
 
@@ -62,10 +62,7 @@ impl<F: Fn(&VideoFrame<'_>) + Send + Sync> VideoSink for F {
 
 /// The sinks the app registered, shared with the frame pumps.
 #[derive(Clone, Default)]
-pub(crate) struct Sinks(
-    Arc<Mutex<HashMap<VideoSlot, Arc<dyn VideoSink>>>>,
-    Arc<Mutex<HashMap<VideoSlot, u64>>>,
-);
+pub(crate) struct Sinks(Arc<Mutex<HashMap<VideoSlot, Arc<dyn VideoSink>>>>);
 
 impl Sinks {
     pub fn set(&self, slot: VideoSlot, sink: Option<Arc<dyn VideoSink>>) {
@@ -76,33 +73,16 @@ impl Sinks {
         };
     }
 
-    pub fn get(&self, slot: &VideoSlot) -> Option<Arc<dyn VideoSink>> {
-        self.0.lock().unwrap().get(slot).cloned()
-    }
-
     /// Hands `buffer` to the slot's sink, if any, converting only what the sink can't take as is.
     pub fn deliver(&self, slot: &VideoSlot, buffer: &dyn VideoBuffer, rotation: VideoRotation) {
-        let Some(sink) = self.get(slot) else { return };
-        deliver(&*sink, buffer, rotation);
-        *self.1.lock().unwrap().entry(slot.clone()).or_default() += 1;
-    }
-
-    /// Frames handed to each slot's sink so far, for the call log.
-    pub fn shown(&self) -> String {
-        let counts = self.1.lock().unwrap();
-        let mut slots: Vec<_> = counts.iter().collect();
-        slots.sort();
-        slots
-            .iter()
-            .map(|(slot, n)| format!("{slot:?}={n}"))
-            .collect::<Vec<_>>()
-            .join(" ")
+        let sink = self.0.lock().unwrap().get(slot).cloned();
+        if let Some(sink) = sink {
+            deliver(&*sink, buffer, rotation);
+        }
     }
 }
 
-/// macOS: reading a native frame makes autoreleased ObjC wrappers that retain its CVPixelBuffer. Media
-/// threads have no autorelease pool, so without one per frame every buffer leaks and the camera and
-/// decoder pools run dry within a second (frozen camera, no remote video).
+/// macOS: media threads have no autorelease pool, so each frame's ObjC wrappers would leak their buffer.
 #[cfg(target_os = "macos")]
 fn with_autorelease_pool<R>(f: impl FnOnce() -> R) -> R {
     unsafe extern "C" {
@@ -124,7 +104,7 @@ fn with_autorelease_pool<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
-pub(crate) fn deliver(sink: &dyn VideoSink, buffer: &dyn VideoBuffer, rotation: VideoRotation) {
+fn deliver(sink: &dyn VideoSink, buffer: &dyn VideoBuffer, rotation: VideoRotation) {
     with_autorelease_pool(|| deliver_frame(sink, buffer, rotation))
 }
 
@@ -193,17 +173,8 @@ fn deliver_frame(sink: &dyn VideoSink, buffer: &dyn VideoBuffer, rotation: Video
     });
 }
 
-/// Forwards a remote track's frames to its slot's sink until the track ends; the latest frame only.
+/// Forwards a track's frames to its slot's sink until it ends, reporting each new frame size.
 pub(crate) fn pump(
-    track: RtcVideoTrack,
-    slot: VideoSlot,
-    sinks: Sinks,
-) -> tokio::task::JoinHandle<()> {
-    pump_sized(track, slot, sinks, None)
-}
-
-/// [`pump`], also reporting each new frame size (a local track whose capture happens natively).
-pub(crate) fn pump_sized(
     track: RtcVideoTrack,
     slot: VideoSlot,
     sinks: Sinks,
@@ -213,7 +184,6 @@ pub(crate) fn pump_sized(
         let mut stream = NativeVideoStream::new(track);
         let mut size = (0, 0);
         while let Some(frame) = stream.next().await {
-            let frame: BoxVideoFrame = frame;
             let frame_size = (frame.buffer.width(), frame.buffer.height());
             if frame_size != size {
                 size = frame_size;

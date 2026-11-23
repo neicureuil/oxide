@@ -1,8 +1,4 @@
-//! The call media engine (`teams-media`, libwebrtc) for the native shells: same commands as the
-//! `Effect::Media*` they receive, events they forward as `CallAction`s.
-//!
-//! Video frames don't cross UniFFI: `teams_media_set_video_sink` (C, `teams_media.h`) hands the planes
-//! of each frame to a callback without copying.
+//! `teams-media` for the shells; video frames skip UniFFI through `teams_media_set_video_sink` (no copy).
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -199,14 +195,19 @@ pub struct ScreenSourceView {
     pub title: String,
 }
 
+impl From<ScreenSourceKindView> for media::ScreenSourceKind {
+    fn from(kind: ScreenSourceKindView) -> Self {
+        match kind {
+            ScreenSourceKindView::Screen => Self::Screen,
+            ScreenSourceKindView::Window => Self::Window,
+        }
+    }
+}
+
 impl From<ScreenSourceView> for media::ScreenSource {
     fn from(s: ScreenSourceView) -> Self {
-        let kind = match s.kind {
-            ScreenSourceKindView::Screen => media::ScreenSourceKind::Screen,
-            ScreenSourceKindView::Window => media::ScreenSourceKind::Window,
-        };
         Self {
-            kind,
+            kind: s.kind.into(),
             id: s.id,
             title: s.title,
         }
@@ -221,62 +222,27 @@ pub struct ThumbnailView {
     pub rgba: Vec<u8>,
 }
 
-/// The engine's progress lines (`log` records of `teams_media`) go to `calling.log`, like the rest of
-/// the call: no SDP, addresses or names are logged there.
+/// The engine's progress lines go to `calling.log`, like the rest of the call.
 struct MediaLog;
 
 impl log::Log for MediaLog {
     fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-        // libwebrtc's INFO lines arrive as Debug.
-        match metadata.target() {
-            "libwebrtc" => metadata.level() <= log::Level::Debug,
-            target => target.starts_with("teams_media") && metadata.level() <= log::Level::Info,
-        }
+        metadata.target().starts_with("teams_media") && metadata.level() <= log::Level::Info
     }
 
     fn log(&self, record: &log::Record<'_>) {
-        if !self.enabled(record.metadata()) {
-            return;
+        if self.enabled(record.metadata()) {
+            teams_calling::diagnostics::record(&format!("media {}", record.args()));
         }
-        if record.target() == "libwebrtc" {
-            // libwebrtc's own lines carry addresses and ids: only what explains encoder keyframes.
-            let line = record.args().to_string();
-            if libwebrtc_kept(&line) {
-                teams_calling::diagnostics::record(&format!("webrtc {line}"));
-            }
-            return;
-        }
-        teams_calling::diagnostics::record(&format!("media {}", record.args()));
     }
 
     fn flush(&self) {}
 }
 
-/// Keyframe and encoder (re)configuration lines; no candidate, address or SDP line matches.
-fn libwebrtc_kept(line: &str) -> bool {
-    let lower = line.to_ascii_lowercase();
-    let wanted = [
-        "key frame",
-        "keyframe",
-        "key_frame",
-        "reconfigureencoder",
-        "initencode",
-        "encoder reconfig",
-        "compression session",
-        "videotoolbox",
-        "pixel format",
-        "using profile",
-        "lowlatency",
-        "low latency",
-    ];
-    let unwanted = ["candidate", "a=", "ice", "stun", "turn", "ufrag"];
-    wanted.iter().any(|w| lower.contains(w)) && !unwanted.iter().any(|u| lower.contains(u))
-}
-
 fn install_media_log() {
     static LOG: MediaLog = MediaLog;
     if log::set_logger(&LOG).is_ok() {
-        log::set_max_level(log::LevelFilter::Debug);
+        log::set_max_level(log::LevelFilter::Info);
     }
 }
 
@@ -290,7 +256,7 @@ pub struct CallMedia {
 
 #[uniffi::export]
 impl CallMedia {
-    /// `synthetic`: no audio device (a tone for a microphone), for demo mode.
+    /// `synthetic`: no device (a tone, a test pattern), for tests.
     #[uniffi::constructor]
     pub fn new(listener: Arc<dyn MediaListener>, synthetic: bool) -> Arc<Self> {
         install_media_log();
@@ -406,10 +372,7 @@ impl CallMedia {
     }
 
     pub fn set_pcm_listener(&self, listener: Option<Arc<dyn PcmListener>>) {
-        let sink = listener.map(|listener| {
-            let sink: Arc<dyn media::PcmSink> = Arc::new(Pcm(listener));
-            sink
-        });
+        let sink = listener.map(|listener| Arc::new(Pcm(listener)) as Arc<dyn media::PcmSink>);
         self.engine.set_pcm_sink(sink);
     }
 
@@ -455,11 +418,7 @@ pub fn media_cameras() -> Vec<DeviceChoiceView> {
 /// Screens or windows that can be shared now.
 #[uniffi::export]
 pub fn media_screen_sources(kind: ScreenSourceKindView) -> Vec<ScreenSourceView> {
-    let kind_media = match kind {
-        ScreenSourceKindView::Screen => media::ScreenSourceKind::Screen,
-        ScreenSourceKindView::Window => media::ScreenSourceKind::Window,
-    };
-    media::screen_sources(kind_media)
+    media::screen_sources(kind.into())
         .into_iter()
         .map(|s| ScreenSourceView {
             kind,
@@ -481,8 +440,6 @@ pub fn media_screen_thumbnail(source: ScreenSourceView, max_width: u32) -> Optio
             rgba,
         })
 }
-
-// MARK: Video frames over C
 
 /// One frame for `TeamsVideoCallback`; pointers valid only during the call.
 #[repr(C)]
@@ -561,9 +518,7 @@ impl media::VideoSink for CSink {
     }
 }
 
-/// Shows a slot's frames through `callback(context, frame)` on a media thread, or stops when `callback`
-/// is null. `slot`: 0 camera, 1 screen, 2 remote line `mid`. `release(context)` runs when the sink is
-/// replaced or removed. Acts on the latest `CallMedia`.
+/// Shows `slot` (0 camera, 1 screen, 2 remote `mid`) through `callback`, or stops when it is null.
 ///
 /// # Safety
 /// `mid` is a NUL-terminated string or null; `context` stays valid until `release`.
@@ -586,12 +541,11 @@ pub unsafe extern "C" fn teams_media_set_video_sink(
         ),
     };
     let sink = callback.map(|callback| {
-        let sink: Arc<dyn media::VideoSink> = Arc::new(CSink {
+        Arc::new(CSink {
             context,
             callback,
             release,
-        });
-        sink
+        }) as Arc<dyn media::VideoSink>
     });
     if sink.is_none()
         && let Some(release) = release

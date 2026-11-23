@@ -1,15 +1,13 @@
 import AVFoundation
 import os
 
-/// A source of video frames for the call window: a libwebrtc track of the LiveKit engine, or a slot of the
-/// Rust engine. Outputs attach and detach on the main thread; frames reach them on media threads.
+/// A call video for the window; outputs attach on the main thread, frames arrive on media threads.
 protocol VideoFeed: AnyObject {
     func add(_ output: VideoOutput)
     func remove(_ output: VideoOutput)
 }
 
-/// Shows the latest frame given on any thread on an `AVSampleBufferDisplayLayer`, dropping frames while one
-/// is on its way to the main thread.
+/// Shows frames from any thread, dropping them while the previous one is still on its way to the main thread.
 final class VideoOutput: @unchecked Sendable {
     private let layer: AVSampleBufferDisplayLayer
     private let pending = OSAllocatedUnfairLock(initialState: false)

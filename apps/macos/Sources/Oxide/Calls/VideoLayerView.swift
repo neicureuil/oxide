@@ -1,7 +1,6 @@
 import AVFoundation
 import AppKit
 
-/// A layer-backed view fed by a call's video feed.
 final class VideoLayerView: NSView {
     private let display = AVSampleBufferDisplayLayer()
     private let output: VideoOutput

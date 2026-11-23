@@ -724,7 +724,7 @@ open class CallMedia: CallMediaProtocol, @unchecked Sendable {
         return try! rustCall { uniffi_teams_core_fn_clone_callmedia(self.handle, $0) }
     }
     /**
-     * `synthetic`: no audio device (a tone for a microphone), for demo mode.
+     * `synthetic`: no device (a tone, a test pattern), for tests.
      */
 public convenience init(listener: MediaListener, synthetic: Bool) {
     let handle =
@@ -20474,7 +20474,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_teams_core_checksum_constructor_oxidecore_new() != 9344) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_teams_core_checksum_constructor_callmedia_new() != 52156) {
+    if (uniffi_teams_core_checksum_constructor_callmedia_new() != 35069) {
         return InitializationResult.apiChecksumMismatch
     }
 
