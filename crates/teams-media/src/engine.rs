@@ -711,6 +711,7 @@ impl Actor {
         if options.video {
             if let Some(track) = self.start_camera(&mut call) {
                 let line = add_track(&pc, MediaStreamTrack::Video(track), offering);
+                choose_camera_encoder(line.as_ref());
                 call.camera_line = line;
             }
         }
@@ -729,7 +730,7 @@ impl Actor {
 
         let description = match options.remote_offer {
             Some(offer) => {
-                let offer = match SessionDescription::parse(&offer, SdpType::Offer) {
+                let offer = match SessionDescription::parse(&send_profile(&offer), SdpType::Offer) {
                     Ok(offer) => offer,
                     Err(e) => {
                         return self.fail(format!(
@@ -912,7 +913,7 @@ impl Actor {
         } else {
             SdpType::Answer
         };
-        let result = match SessionDescription::parse(sdp, kind) {
+        let result = match SessionDescription::parse(&send_profile(sdp), kind) {
             Ok(description) => pc
                 .set_remote_description(description)
                 .await
@@ -980,7 +981,7 @@ impl Actor {
         if !self.roll_back(&pc, generation).await {
             return;
         }
-        let result = match SessionDescription::parse(sdp, SdpType::Offer) {
+        let result = match SessionDescription::parse(&send_profile(sdp), SdpType::Offer) {
             Ok(offer) => pc
                 .set_remote_description(offer)
                 .await
@@ -1261,7 +1262,11 @@ impl Actor {
     fn start_camera(&self, call: &mut Call) -> Option<RtcVideoTrack> {
         let tx = self.tx.clone();
         let generation = call.generation;
-        let start = if self.synthetic { Camera::synthetic } else { Camera::start };
+        let start = if self.synthetic {
+            Camera::synthetic
+        } else {
+            Camera::start
+        };
         let Some((camera, track)) = start(
             &call.factory,
             self.devices.camera.as_ref(),
@@ -1328,6 +1333,7 @@ impl Actor {
                 .sender()
                 .set_track(Some(MediaStreamTrack::Video(track)));
             let _ = line.set_direction(RtpTransceiverDirection::SendRecv);
+            choose_camera_encoder(Some(&line));
             call.camera_line = Some(line);
         } else {
             let id = call.id.clone();
@@ -1494,6 +1500,40 @@ fn add_receive_video(pc: &PeerConnection) -> Option<RtpTransceiver> {
     pc.add_transceiver_for_media(MediaType::Video, init).ok()
 }
 
+/// The camera's encoder: the hardware one by default. `OXIDE_VIDEO_ENCODER=software` switches to
+/// OpenH264 to compare (it showed the once-a-second keyframes come from VideoToolbox on macOS).
+fn choose_camera_encoder(line: Option<&RtpTransceiver>) {
+    use libwebrtc::rtp_sender::VideoEncoderBackend;
+    let Some(line) = line else { return };
+    if std::env::var("OXIDE_VIDEO_ENCODER").as_deref() == Ok("software") {
+        log::info!("camera encoder: software");
+        line.sender()
+            .set_video_encoder_backend(VideoEncoderBackend::Software);
+    }
+}
+
+/// The H264 profile we send. Teams asks for Constrained Baseline (42C02A), but LiveKit's VideoToolbox
+/// encoder only enables its low-latency rate control for High profiles; in Baseline it runs in its
+/// recording mode and emits a keyframe every second, which blurs our camera for the others. Teams
+/// clients decode Constrained High (checked on a real call), so on macOS the remote side's H264 lines
+/// are read as Constrained High. `OXIDE_H264_SEND_PROFILE=baseline` keeps what Teams said; the software
+/// encoder (`OXIDE_VIDEO_ENCODER=software`) has no such mode and keeps it too.
+fn send_profile(sdp: &str) -> String {
+    let baseline = match std::env::var("OXIDE_H264_SEND_PROFILE").as_deref() {
+        Ok("baseline") => true,
+        Ok("high") => false,
+        _ => {
+            !cfg!(target_os = "macos")
+                || std::env::var("OXIDE_VIDEO_ENCODER").as_deref() == Ok("software")
+        }
+    };
+    if baseline {
+        return sdp.to_string();
+    }
+    sdp.replace("profile-level-id=42C02A", "profile-level-id=640C2A")
+        .replace("profile-level-id=42c02a", "profile-level-id=640c2a")
+}
+
 /// The last negotiation lets this line send.
 fn sends(line: Option<&RtpTransceiver>) -> bool {
     line.and_then(|l| l.current_direction()).is_some_and(|d| {
@@ -1639,6 +1679,16 @@ fn restart_audio(factory: &PeerConnectionFactory) {
 #[cfg(test)]
 mod tests {
     use super::scale_down;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_sends_constrained_high_for_videotoolbox_low_latency() {
+        let answer = "a=fmtp:107 profile-level-id=42C02A;packetization-mode=1\r\n";
+        assert_eq!(
+            super::send_profile(answer),
+            "a=fmtp:107 profile-level-id=640C2A;packetization-mode=1\r\n"
+        );
+    }
 
     #[test]
     fn scale_fits_the_mixer_frame_size() {

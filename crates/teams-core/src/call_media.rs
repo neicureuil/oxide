@@ -227,22 +227,56 @@ struct MediaLog;
 
 impl log::Log for MediaLog {
     fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-        metadata.level() <= log::Level::Info && metadata.target().starts_with("teams_media")
+        // libwebrtc's INFO lines arrive as Debug.
+        match metadata.target() {
+            "libwebrtc" => metadata.level() <= log::Level::Debug,
+            target => target.starts_with("teams_media") && metadata.level() <= log::Level::Info,
+        }
     }
 
     fn log(&self, record: &log::Record<'_>) {
-        if self.enabled(record.metadata()) {
-            teams_calling::diagnostics::record(&format!("media {}", record.args()));
+        if !self.enabled(record.metadata()) {
+            return;
         }
+        if record.target() == "libwebrtc" {
+            // libwebrtc's own lines carry addresses and ids: only what explains encoder keyframes.
+            let line = record.args().to_string();
+            if libwebrtc_kept(&line) {
+                teams_calling::diagnostics::record(&format!("webrtc {line}"));
+            }
+            return;
+        }
+        teams_calling::diagnostics::record(&format!("media {}", record.args()));
     }
 
     fn flush(&self) {}
 }
 
+/// Keyframe and encoder (re)configuration lines; no candidate, address or SDP line matches.
+fn libwebrtc_kept(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    let wanted = [
+        "key frame",
+        "keyframe",
+        "key_frame",
+        "reconfigureencoder",
+        "initencode",
+        "encoder reconfig",
+        "compression session",
+        "videotoolbox",
+        "pixel format",
+        "using profile",
+        "lowlatency",
+        "low latency",
+    ];
+    let unwanted = ["candidate", "a=", "ice", "stun", "turn", "ufrag"];
+    wanted.iter().any(|w| lower.contains(w)) && !unwanted.iter().any(|u| lower.contains(u))
+}
+
 fn install_media_log() {
     static LOG: MediaLog = MediaLog;
     if log::set_logger(&LOG).is_ok() {
-        log::set_max_level(log::LevelFilter::Info);
+        log::set_max_level(log::LevelFilter::Debug);
     }
 }
 

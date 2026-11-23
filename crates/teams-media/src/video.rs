@@ -62,7 +62,10 @@ impl<F: Fn(&VideoFrame<'_>) + Send + Sync> VideoSink for F {
 
 /// The sinks the app registered, shared with the frame pumps.
 #[derive(Clone, Default)]
-pub(crate) struct Sinks(Arc<Mutex<HashMap<VideoSlot, Arc<dyn VideoSink>>>>, Arc<Mutex<HashMap<VideoSlot, u64>>>);
+pub(crate) struct Sinks(
+    Arc<Mutex<HashMap<VideoSlot, Arc<dyn VideoSink>>>>,
+    Arc<Mutex<HashMap<VideoSlot, u64>>>,
+);
 
 impl Sinks {
     pub fn set(&self, slot: VideoSlot, sink: Option<Arc<dyn VideoSink>>) {
@@ -89,7 +92,11 @@ impl Sinks {
         let counts = self.1.lock().unwrap();
         let mut slots: Vec<_> = counts.iter().collect();
         slots.sort();
-        slots.iter().map(|(slot, n)| format!("{slot:?}={n}")).collect::<Vec<_>>().join(" ")
+        slots
+            .iter()
+            .map(|(slot, n)| format!("{slot:?}={n}"))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 

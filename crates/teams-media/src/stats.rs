@@ -73,15 +73,20 @@ pub(crate) fn video_summary(report: &[RtcStats]) -> String {
     for stat in report {
         match stat {
             RtcStats::OutboundRtp(s) if s.stream.kind == "video" => parts.push(format!(
-                "out[{}] encoded={} sent={} key={} {}px {:.0}fps limit={:?} pli={} enc={}",
+                "out[{}] encoded={} sent={} key={} {}px {:.0}fps qp={:.0} target={}kbps bytes={} limit={:?} resized={} pli={} fir={} enc={}",
                 s.stream.ssrc,
                 s.outbound.frames_encoded,
                 s.outbound.frames_sent,
                 s.outbound.key_frames_encoded,
                 s.outbound.frame_width,
                 s.outbound.frames_per_second,
+                s.outbound.qp_sum as f64 / f64::from(s.outbound.frames_encoded.max(1)),
+                (s.outbound.target_bitrate / 1000.0) as u64,
+                s.sent.bytes_sent,
                 s.outbound.quality_limitation_reason,
+                s.outbound.quality_limitation_resolution_changes,
                 s.outbound.pli_count,
+                s.outbound.fir_count,
                 s.outbound.encoder_implementation,
             )),
             RtcStats::InboundRtp(s) if s.stream.kind == "video" => parts.push(format!(
@@ -95,6 +100,9 @@ pub(crate) fn video_summary(report: &[RtcStats]) -> String {
                 s.inbound.pli_count,
                 s.inbound.decoder_implementation,
             )),
+            RtcStats::CandidatePair(s) if s.candidate_pair.nominated && s.candidate_pair.available_outgoing_bitrate > 0.0 => {
+                parts.push(format!("link out={}kbps", (s.candidate_pair.available_outgoing_bitrate / 1000.0) as u64))
+            }
             _ => {}
         }
     }

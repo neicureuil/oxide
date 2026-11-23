@@ -55,7 +55,6 @@ uint64_t MacCamera::frames() const {
   return frames_->load(std::memory_order_relaxed);
 }
 
-// Built without ARC, like the other .mm files: the two objects are owned here.
 MacCamera::~MacCamera() {
   stop();
   [(id)capturer_ release];

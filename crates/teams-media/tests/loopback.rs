@@ -179,11 +179,20 @@ async fn camera_keeps_flowing_to_the_other_side() {
     options.video = true;
     caller.engine.prepare(options);
     let offer = local_description(&mut caller).await;
-    callee.engine.prepare(prepare("cam", Some(offer)));
+    // Through the Teams conversion, as in a call: H264 only.
+    let ngc_offer = sdp::to_ngc_in(&offer, Kind::Offer, false);
+    callee.engine.prepare(prepare(
+        "cam",
+        Some(sdp::from_ngc(&ngc_offer, Kind::Offer, None)),
+    ));
     // The remote line surfaces while the offer is applied, before our answer.
     let mut mid = None;
     let answer = next(&mut callee, |e| match e {
-        MediaEvent::Video { slot: VideoSlot::Remote(m), present: true, .. } => {
+        MediaEvent::Video {
+            slot: VideoSlot::Remote(m),
+            present: true,
+            ..
+        } => {
             mid = Some(m);
             None
         }
@@ -192,7 +201,12 @@ async fn camera_keeps_flowing_to_the_other_side() {
     })
     .await;
     let mid = mid.expect("the caller's camera line surfaces");
-    caller.engine.set_remote_description("cam", &answer, false);
+    let ngc_answer = sdp::answer_to_ngc(&answer, &ngc_offer, false);
+    caller.engine.set_remote_description(
+        "cam",
+        &sdp::from_ngc(&ngc_answer, Kind::Answer, Some(&offer)),
+        false,
+    );
     connected(&mut caller).await;
     let frames = Arc::new(AtomicUsize::new(0));
     let count = frames.clone();
@@ -207,7 +221,10 @@ async fn camera_keeps_flowing_to_the_other_side() {
     tokio::time::sleep(Duration::from_secs(4)).await;
     let late = frames.load(Ordering::Relaxed);
     assert!(early > 0, "no remote frame at all");
-    assert!(late - early > 20, "remote video stalled: {early} then {late}");
+    assert!(
+        late - early > 20,
+        "remote video stalled: {early} then {late}"
+    );
     caller.engine.close("cam");
     callee.engine.close("cam");
 }

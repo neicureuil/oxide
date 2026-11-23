@@ -82,14 +82,31 @@ impl Camera {
         #[cfg(target_os = "macos")]
         {
             let _ = &failed;
-            let source = NativeVideoSource::new_external(VideoResolution { width: PREFERRED_WIDTH, height: 720 });
-            let (id, name) = choice.map_or((String::new(), String::new()), |c| (c.id.clone(), c.name.clone()));
+            let source = NativeVideoSource::new_external(VideoResolution {
+                width: PREFERRED_WIDTH,
+                height: 720,
+            });
+            let (id, name) = choice.map_or((String::new(), String::new()), |c| {
+                (c.id.clone(), c.name.clone())
+            });
             let mac = libwebrtc::native::camera_mac::MacCamera::start(&source, &id, &name)?;
             log::info!("camera started (AVFoundation)");
             let track = factory.create_video_track("video0", source);
-            let preview =
-                crate::video::pump_sized(track.clone(), VideoSlot::Camera, sinks, Some(size_changed));
-            return Some((Camera { stop: Arc::new(AtomicBool::new(false)), thread: None, mac: Some(mac), preview: Some(preview) }, track));
+            let preview = crate::video::pump_sized(
+                track.clone(),
+                VideoSlot::Camera,
+                sinks,
+                Some(size_changed),
+            );
+            return Some((
+                Camera {
+                    stop: Arc::new(AtomicBool::new(false)),
+                    thread: None,
+                    mac: Some(mac),
+                    preview: Some(preview),
+                },
+                track,
+            ));
         }
         #[cfg(not(target_os = "macos"))]
         Self::start_nokhwa(factory, choice, sinks, size_changed, failed)
@@ -105,7 +122,13 @@ impl Camera {
     ) -> Option<(Camera, RtcVideoTrack)> {
         const W: u32 = 640;
         const H: u32 = 360;
-        let source = NativeVideoSource::new(VideoResolution { width: W, height: H }, false);
+        let source = NativeVideoSource::new(
+            VideoResolution {
+                width: W,
+                height: H,
+            },
+            false,
+        );
         let track = factory.create_video_track("video0", source.clone());
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
@@ -127,7 +150,19 @@ impl Camera {
                         u[..su as usize * (H as usize / 2)].fill(128);
                         v[..sv as usize * (H as usize / 2)].fill(128);
                         sinks.deliver(&VideoSlot::Camera, &frame, VideoRotation::VideoRotation0);
-                        source.capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, frame));
+                        // macOS: as the camera gives them, IOSurface-backed full-range NV12 buffers.
+                        #[cfg(target_os = "macos")]
+                        if let Some(native) = native_pattern::to_cv_pixel_buffer(&frame) {
+                            source.capture_frame(&VideoFrame::new(
+                                VideoRotation::VideoRotation0,
+                                native,
+                            ));
+                            tick = tick.wrapping_add(1);
+                            std::thread::sleep(std::time::Duration::from_millis(66));
+                            continue;
+                        }
+                        source
+                            .capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, frame));
                         tick = tick.wrapping_add(1);
                         std::thread::sleep(std::time::Duration::from_millis(66));
                     }
@@ -435,5 +470,109 @@ mod tests {
         rgb_to_i420(&rgb, 4, 2, (&mut y, 4), (&mut u, 2), (&mut v, 2));
         assert!(y.iter().all(|&p| p == 235), "{y:?}");
         assert!(u.iter().chain(&v).all(|&p| p == 128));
+    }
+}
+
+/// The test pattern as camera-like CVPixelBuffers, so tests cover the native encoder path.
+#[cfg(target_os = "macos")]
+mod native_pattern {
+    use std::ffi::c_void;
+
+    use libwebrtc::video_frame::I420Buffer;
+    use libwebrtc::video_frame::native::NativeBuffer;
+
+    type CFTypeRef = *const c_void;
+    const FULL_RANGE_NV12: u32 = u32::from_be_bytes(*b"420f");
+
+    #[link(name = "CoreVideo", kind = "framework")]
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        static kCVPixelBufferIOSurfacePropertiesKey: CFTypeRef;
+        static kCFTypeDictionaryKeyCallBacks: c_void;
+        static kCFTypeDictionaryValueCallBacks: c_void;
+        fn CFDictionaryCreate(
+            allocator: CFTypeRef,
+            keys: *const CFTypeRef,
+            values: *const CFTypeRef,
+            count: isize,
+            key_callbacks: *const c_void,
+            value_callbacks: *const c_void,
+        ) -> CFTypeRef;
+        fn CFRelease(cf: CFTypeRef);
+        fn CVPixelBufferCreate(
+            allocator: CFTypeRef,
+            width: usize,
+            height: usize,
+            format: u32,
+            attributes: CFTypeRef,
+            out: *mut *mut c_void,
+        ) -> i32;
+        fn CVPixelBufferLockBaseAddress(buffer: *mut c_void, flags: u64) -> i32;
+        fn CVPixelBufferUnlockBaseAddress(buffer: *mut c_void, flags: u64) -> i32;
+        fn CVPixelBufferGetBaseAddressOfPlane(buffer: *mut c_void, plane: usize) -> *mut u8;
+        fn CVPixelBufferGetBytesPerRowOfPlane(buffer: *mut c_void, plane: usize) -> usize;
+    }
+
+    pub(super) fn to_cv_pixel_buffer(frame: &I420Buffer) -> Option<NativeBuffer> {
+        use libwebrtc::video_frame::VideoBuffer;
+        let (width, height) = (frame.width() as usize, frame.height() as usize);
+        unsafe {
+            let empty = CFDictionaryCreate(
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                &kCFTypeDictionaryKeyCallBacks,
+                &kCFTypeDictionaryValueCallBacks,
+            );
+            let keys = [kCVPixelBufferIOSurfacePropertiesKey];
+            let values = [empty];
+            let attributes = CFDictionaryCreate(
+                std::ptr::null(),
+                keys.as_ptr(),
+                values.as_ptr(),
+                1,
+                &kCFTypeDictionaryKeyCallBacks,
+                &kCFTypeDictionaryValueCallBacks,
+            );
+            let mut buffer = std::ptr::null_mut();
+            let status = CVPixelBufferCreate(
+                std::ptr::null(),
+                width,
+                height,
+                FULL_RANGE_NV12,
+                attributes,
+                &mut buffer,
+            );
+            CFRelease(attributes);
+            CFRelease(empty);
+            if status != 0 || buffer.is_null() {
+                return None;
+            }
+            CVPixelBufferLockBaseAddress(buffer, 0);
+            let (y, u, v) = frame.data();
+            let (sy, su, sv) = frame.strides();
+            let dst_y = CVPixelBufferGetBaseAddressOfPlane(buffer, 0);
+            let dst_uv = CVPixelBufferGetBaseAddressOfPlane(buffer, 1);
+            let stride_y = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0);
+            let stride_uv = CVPixelBufferGetBytesPerRowOfPlane(buffer, 1);
+            for row in 0..height {
+                std::ptr::copy_nonoverlapping(
+                    y[row * sy as usize..].as_ptr(),
+                    dst_y.add(row * stride_y),
+                    width,
+                );
+            }
+            for row in 0..height.div_ceil(2) {
+                let line = dst_uv.add(row * stride_uv);
+                for x in 0..width.div_ceil(2) {
+                    *line.add(2 * x) = u[row * su as usize + x];
+                    *line.add(2 * x + 1) = v[row * sv as usize + x];
+                }
+            }
+            CVPixelBufferUnlockBaseAddress(buffer, 0);
+            // The native buffer takes this reference over.
+            Some(NativeBuffer::from_cv_pixel_buffer(buffer))
+        }
     }
 }

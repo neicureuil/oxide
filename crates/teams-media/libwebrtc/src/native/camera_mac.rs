@@ -13,7 +13,8 @@ impl MacCamera {
     /// The camera with this AVFoundation `uniqueID`, else this name, else the default one; 720p when
     /// available, at most 30 fps. `None` without a camera.
     pub fn start(source: &NativeVideoSource, unique_id: &str, name: &str) -> Option<Self> {
-        let handle = ffi::start_mac_camera(source.handle.sys_handle(), unique_id.into(), name.into());
+        let handle =
+            ffi::start_mac_camera(source.handle.sys_handle(), unique_id.into(), name.into());
         (!handle.is_null()).then_some(Self { _handle: handle })
     }
 
