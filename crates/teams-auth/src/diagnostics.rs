@@ -1,7 +1,6 @@
 //! Local diagnostic logs in `~/Library/Logs/Oxide`, or `$OXIDE_LOG_DIR` (cargo runs, see `.cargo/config.toml`):
 //! never tokens or message content.
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::sync::{OnceLock, mpsc};
 
 /// One log file, written by its own background thread, never on the caller's (async or state) thread.
@@ -46,12 +45,12 @@ fn spawn_writer(name: &str) -> Option<mpsc::Sender<String>> {
                 // Reopen when the log was removed, as the per-line open did.
                 if file.is_none() || !path.exists() {
                     let _ = std::fs::create_dir_all(&directory);
-                    file = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .mode(0o600)
-                        .open(&path)
-                        .ok();
+                    let mut options = std::fs::OpenOptions::new();
+                    options.create(true).append(true);
+                    // Owner-only on Unix; Windows keeps the user profile's default access.
+                    #[cfg(unix)]
+                    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+                    file = options.open(&path).ok();
                 }
                 if let Some(file) = file.as_mut() {
                     let _ = file.write_all(line.as_bytes());

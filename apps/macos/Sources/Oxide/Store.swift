@@ -87,7 +87,7 @@ final class Store {
 
     init(demo: Bool) {
         isDemo = demo
-        media = demo ? DemoMediaEngine() : WebRTCMediaEngine()
+        media = demo ? DemoMediaEngine() : RustMediaEngine()
         let listener = Listener()
         listener.store = self
         login.onReturn = { [weak self] url in self?.send(.loginReturned(url: url)) }

@@ -36,6 +36,8 @@ sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 uniffi = { version = "0.32.2", features = ["cli"] }
+teams-media = { workspace = true, optional = true }
+log = { version = "0.4", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3.6.3", features = ["apple-native"] }
@@ -43,6 +45,8 @@ keyring = { version = "3.6.3", features = ["apple-native"] }
 [features]
 # In-process fake Microsoft services behind `--demo`. Never in a release build.
 demo = ["dep:axum", "teams-calling/fake", "teams-realtime/fake"]
+# The call media engine (libwebrtc) exported to the shells as `CallMedia`.
+media = ["dep:teams-media", "dep:log"]
 
 [dev-dependencies]
 teams-core = { path = ".", features = ["demo"] }

@@ -1,5 +1,5 @@
 import Darwin
-import LiveKitWebRTC
+import Foundation
 import Observation
 import OxideCore
 
@@ -45,10 +45,10 @@ struct SendLimits {
 protocol MediaEngine: AnyObject {
     var onEvent: ((MediaEvent) -> Void)? { get set }
     /// Local camera and remote video, for the call window.
-    var localVideo: LKRTCVideoTrack? { get }
-    var remoteVideo: LKRTCVideoTrack? { get }
-    /// Remote video tracks by m-line (`mid`): the mixer's cameras and shared screen.
-    var remoteVideos: [String: LKRTCVideoTrack] { get }
+    var localVideo: VideoFeed? { get }
+    var remoteVideo: VideoFeed? { get }
+    /// Remote videos by m-line (`mid`): the mixer's cameras and shared screen.
+    var remoteVideos: [String: VideoFeed] { get }
     /// CSRCs heard in the mixed audio just now: who is speaking.
     var speakingSources: Set<UInt32> { get }
     /// Our microphone picks up a voice.
@@ -70,7 +70,7 @@ protocol MediaEngine: AnyObject {
     func setCamera(callId: String, on: Bool)
     /// Captures `chosenScreen` (else the main screen) on the sharing line, or stops; renegotiates either way.
     func setScreenShare(callId: String, on: Bool)
-    /// What the next screen share captures, picked in the share sheet; the engine closes its lists.
+    /// What the next screen share captures, picked in the share sheet.
     var chosenScreen: ScreenChoice? { get set }
     /// The mixer's bounds for one of our sending lines (`controlVideoStreaming`), and a keyframe.
     func applySendLimits(callId: String, _ limits: SendLimits)
@@ -92,9 +92,9 @@ protocol MediaEngine: AnyObject {
 @Observable
 final class DemoMediaEngine: MediaEngine {
     @ObservationIgnored var onEvent: ((MediaEvent) -> Void)?
-    let localVideo: LKRTCVideoTrack? = nil
-    let remoteVideo: LKRTCVideoTrack? = nil
-    let remoteVideos: [String: LKRTCVideoTrack] = [:]
+    let localVideo: VideoFeed? = nil
+    let remoteVideo: VideoFeed? = nil
+    let remoteVideos: [String: VideoFeed] = [:]
     let speakingSources: Set<UInt32> = []
     let localSpeaking = false
     let reconnecting = false
@@ -133,9 +133,7 @@ final class DemoMediaEngine: MediaEngine {
     func setMuted(callId: String, muted: Bool) {}
     func setCamera(callId: String, on: Bool) {}
     func setScreenShare(callId: String, on: Bool) {}
-    var chosenScreen: ScreenChoice? {
-        didSet { oldValue?.lists.close() }
-    }
+    var chosenScreen: ScreenChoice?
     func applySendLimits(callId: String, _ limits: SendLimits) {}
     func setSpeaker(callId: String, on: Bool) {}
     @ObservationIgnored private var recorder: LocalRecorder?

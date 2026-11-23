@@ -1,0 +1,29 @@
+[package]
+# Fork of LiveKit's libwebrtc 0.4.2 (github.com/livekit/rust-sdks), trimmed for Teams calls: see ../webrtc-sys/FORK.md.
+name = "libwebrtc"
+version = "0.4.2"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "Safe bindings to libwebrtc (Teams fork)"
+
+[features]
+default = []
+# Wayland screen sharing goes through the XDG portal over GDBus, which needs a running GLib loop.
+glib-main-loop = ["dep:glib"]
+
+[dependencies]
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2"
+webrtc-sys = { path = "../webrtc-sys" }
+tokio-stream = "0.1"
+lazy_static = "1.4"
+parking_lot = "0.12"
+tokio = { version = "1", default-features = false, features = ["sync", "macros", "time", "rt-multi-thread"] }
+cxx = "1.0"
+rtrb = "0.3.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+glib = { version = "0.21.3", optional = true }

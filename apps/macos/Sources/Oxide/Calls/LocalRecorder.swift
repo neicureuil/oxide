@@ -1,5 +1,4 @@
 import AVFoundation
-import LiveKitWebRTC
 import os
 import QuartzCore
 
@@ -156,8 +155,6 @@ final class LocalRecorder: @unchecked Sendable {
         private let recorder: LocalRecorder
         private var converter: AVAudioConverter?
         private var output: AVAudioPCMBuffer
-        /// The microphone's float samples, rebuilt when its frame size or channels change.
-        private var capture: AVAudioPCMBuffer?
 
         fileprivate init(_ recorder: LocalRecorder) {
             self.recorder = recorder
@@ -190,60 +187,5 @@ final class LocalRecorder: @unchecked Sendable {
             guard status != .error, output.frameLength > 0 else { return }
             recorder.mix(output.floatChannelData![0], count: Int(output.frameLength), from: ObjectIdentifier(self))
         }
-
-        /// A 10 ms block from the audio processing module: floats in the 16-bit range, read only.
-        func append(_ buffer: LKRTCAudioBuffer) {
-            let channels = AVAudioChannelCount(buffer.channels), frames = AVAudioFrameCount(buffer.frames)
-            guard channels > 0, frames > 0 else { return }
-            if capture?.format.channelCount != channels || capture?.frameCapacity != frames {
-                guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(frames) * 100,
-                                                 channels: channels, interleaved: false) else { return }
-                capture = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)
-            }
-            guard let capture else { return }
-            for channel in 0..<Int(channels) {
-                let source = buffer.rawBuffer(forChannel: channel), target = capture.floatChannelData![channel]
-                for frame in 0..<Int(frames) { target[frame] = source[frame] / 32_768 }
-            }
-            capture.frameLength = frames
-            append(capture)
-        }
-    }
-}
-
-/// The microphone after libwebrtc's processing: a passthrough that copies into the recording, if any, while unmuted.
-final class MicrophoneTap: NSObject, LKRTCAudioCustomProcessingDelegate, @unchecked Sendable {
-    private let state = OSAllocatedUnfairLock<(input: LocalRecorder.Input?, muted: Bool)>(initialState: (nil, false))
-
-    var input: LocalRecorder.Input? {
-        get { state.withLock { $0.input } }
-        set { state.withLock { $0.input = newValue } }
-    }
-    var muted: Bool {
-        get { state.withLock { $0.muted } }
-        set { state.withLock { $0.muted = newValue } }
-    }
-
-    func audioProcessingInitialize(sampleRate sampleRateHz: Int, channels: Int) {}
-
-    func audioProcessingProcess(audioBuffer: LKRTCAudioBuffer) {
-        let (input, muted) = state.withLock { ($0.input, $0.muted) }
-        guard let input, !muted else { return }
-        input.append(audioBuffer)
-    }
-
-    func audioProcessingRelease() {}
-}
-
-/// A participants' track into the recording.
-final class RemoteAudioTap: NSObject, LKRTCAudioRenderer, @unchecked Sendable {
-    let input: LocalRecorder.Input
-
-    init(_ input: LocalRecorder.Input) {
-        self.input = input
-    }
-
-    func render(pcmBuffer: AVAudioPCMBuffer) {
-        input.append(pcmBuffer)
     }
 }
