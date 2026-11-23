@@ -38,7 +38,7 @@ ces cibles.
 
 - macOS : le binaire final doit passer `-ObjC` au linker (cargo ne le propage pas) : `crates/teams-media/build.rs`,
   `crates/teams-core/build.rs`, `apps/macos/Package.swift`.
-- Linux : clang ≥ 21 (libc++ hermétique de libwebrtc), en-têtes X11/DRM/GBM/GLib (voir `.github/workflows/media.yml`).
+- Linux : clang ≥ 21 (libc++ hermétique de libwebrtc), en-têtes X11/DRM/GBM/GLib, PulseAudio/ALSA et V4L2.
 - Windows : MSVC.
 - Un seul libwebrtc par processus : lié avec un autre (ex. `LiveKitWebRTC.framework`), les symboles C++
   se mélangent et la création de la factory se bloque.
@@ -47,4 +47,4 @@ ces cibles.
 
 1. Récupérer les nouvelles versions publiées des deux crates.
 2. Réappliquer les lignes du tableau ci-dessus (chercher `Teams fork`) et les retraits.
-3. `cargo test -p teams-media` sur les trois systèmes (CI `Media`), puis un appel test au bot d'écho.
+3. `cargo test -p teams-media` sur les trois systèmes, puis un appel test au bot d'écho.

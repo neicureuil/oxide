@@ -49,7 +49,7 @@ fn device_id(misc: String, index: &CameraIndex) -> String {
 }
 
 pub(crate) type SizeChanged = Box<dyn Fn(u32, u32) + Send>;
-pub(crate) type Failed = Box<dyn Fn() + Send>;
+pub(crate) type Failed = Box<dyn Fn() + Send + Sync>;
 
 /// A capture loop on its own thread, stopped through a shared flag.
 pub(crate) struct CaptureThread {
@@ -98,7 +98,7 @@ impl Camera {
         choice: Option<&DeviceChoice>,
         sinks: Sinks,
         size_changed: SizeChanged,
-        _failed: Failed,
+        failed: Failed,
     ) -> Option<(Camera, RtcVideoTrack)> {
         // nokhwa can't open the built-in camera's formats on macOS; frames stay CVPixelBuffers here.
         let source = NativeVideoSource::new_external(VideoResolution {
@@ -108,7 +108,7 @@ impl Camera {
         let (id, name) = choice.map_or((String::new(), String::new()), |c| {
             (c.id.clone(), c.name.clone())
         });
-        let mac = libwebrtc::native::camera_mac::MacCamera::start(&source, &id, &name)?;
+        let mac = libwebrtc::native::camera_mac::MacCamera::start(&source, &id, &name, failed)?;
         log::info!("camera started (AVFoundation)");
         let track = factory.create_video_track("video0", source);
         let preview =

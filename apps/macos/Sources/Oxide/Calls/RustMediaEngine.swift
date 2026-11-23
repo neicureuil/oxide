@@ -347,7 +347,7 @@ final class RustVideoFeed: VideoFeed, @unchecked Sendable {
     private func deliver(_ frame: TeamsVideoFrame) {
         let outputs = outputs.withLock { Array($0.values) }
         for output in outputs {
-            output.render {
+            output.render(rotation: Int(frame.rotation)) {
                 let width = Int(frame.width), height = Int(frame.height)
                 switch frame.format {
                 case 2:

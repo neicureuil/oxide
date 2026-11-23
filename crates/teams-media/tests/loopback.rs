@@ -221,6 +221,51 @@ async fn camera_keeps_flowing_to_the_other_side() {
         late - early > 20,
         "remote video stalled: {early} then {late}"
     );
+
+    // Camera off: after the renegotiation, the line is gone on the other side too.
+    caller.engine.set_camera("cam", false);
+    let reoffer = local_description(&mut caller).await;
+    let ngc_reoffer = sdp::to_ngc_in(&reoffer, Kind::Offer, false);
+    callee
+        .engine
+        .answer_remote_offer("cam", &sdp::from_ngc(&ngc_reoffer, Kind::Offer, None));
+    next(&mut callee, |e| match e {
+        MediaEvent::Video {
+            slot: VideoSlot::Remote(_),
+            present: false,
+            ..
+        } => Some(()),
+        _ => None,
+    })
+    .await;
     caller.engine.close("cam");
     callee.engine.close("cam");
+}
+
+/// A camera turned on before the answer starts, and renegotiates, once the answer is in.
+#[tokio::test(flavor = "multi_thread")]
+async fn camera_asked_before_the_answer_starts_after_it() {
+    let mut caller = side();
+    let mut callee = side();
+    caller.engine.prepare(prepare("early", None));
+    let offer = local_description(&mut caller).await;
+    caller.engine.set_camera("early", true);
+    callee.engine.prepare(prepare("early", Some(offer)));
+    let answer = local_description(&mut callee).await;
+    caller
+        .engine
+        .set_remote_description("early", &answer, false);
+    next(&mut caller, |e| match e {
+        MediaEvent::Video {
+            slot: VideoSlot::Camera,
+            present: true,
+            ..
+        } => Some(()),
+        _ => None,
+    })
+    .await;
+    let reoffer = local_description(&mut caller).await;
+    assert!(reoffer.matches("a=sendrecv").count() >= 2, "audio and camera send: {reoffer}");
+    caller.engine.close("early");
+    callee.engine.close("early");
 }

@@ -28,13 +28,15 @@ final class RustMediaEngineTests: XCTestCase {
         callee.close(callId: "c")
     }
 
+    private struct TimedOut: Error {}
+
     private func wait<T>(_ probe: () -> T?, timeout: Duration = .seconds(15)) async throws -> T {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
             if let value = probe() { return value }
             try await Task.sleep(for: .milliseconds(50))
         }
-        throw XCTSkip("timed out")
+        throw TimedOut()
     }
 }
 

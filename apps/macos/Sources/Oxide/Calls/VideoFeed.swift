@@ -13,11 +13,21 @@ final class VideoOutput: @unchecked Sendable {
     private let pending = OSAllocatedUnfairLock(initialState: false)
     /// Reused NV12 buffers for frames that aren't one already, rebuilt when the resolution changes.
     private let pool = OSAllocatedUnfairLock<(pool: CVPixelBufferPool, width: Int, height: Int)?>(uncheckedState: nil)
+    private let rotation = OSAllocatedUnfairLock(initialState: 0)
+    /// The clockwise rotation frames now ask for, told on the main thread when it changes.
+    @MainActor var onRotation: ((Int) -> Void)?
 
     init(layer: AVSampleBufferDisplayLayer) { self.layer = layer }
 
     /// Shows the frame `make` builds, unless the previous one isn't on screen yet (then `make` isn't called).
-    func render(_ make: () -> CVPixelBuffer?) {
+    func render(rotation degrees: Int = 0, _ make: () -> CVPixelBuffer?) {
+        let changed = rotation.withLock { current in
+            defer { current = degrees }
+            return current != degrees
+        }
+        if changed {
+            DispatchQueue.main.async { [weak self] in self?.onRotation?(degrees) }
+        }
         let busy = pending.withLock { busy in
             defer { busy = true }
             return busy

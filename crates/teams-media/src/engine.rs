@@ -1,5 +1,5 @@
 //! The call's peer connection, run by one actor: app commands and libwebrtc callbacks share its queue, so no lock.
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -270,6 +270,8 @@ struct Call {
     /// The lines our camera and our screen go out on, kept from the offer that created them.
     camera_line: Option<RtpTransceiver>,
     sharing_line: Option<RtpTransceiver>,
+    /// Camera on/off asked before the line could renegotiate, applied once it can.
+    pending_camera: Option<bool>,
     pending: Pending,
     /// Bumped on each new local description, so a stale gathering timer doesn't send.
     negotiation: u64,
@@ -291,7 +293,8 @@ struct Call {
     speaking: BTreeSet<u32>,
     local_speaking: bool,
     diagnostics: CallDiagnostics,
-    remote_videos: BTreeSet<String>,
+    /// Remote video lines shown, by mid, with the pump feeding their sink.
+    remote_videos: BTreeMap<String, tokio::task::JoinHandle<()>>,
 }
 
 struct Actor {
@@ -502,6 +505,10 @@ impl Actor {
                 };
                 match track {
                     MediaStreamTrack::Audio(audio) => {
+                        // libwebrtc may report the same track again after a renegotiation.
+                        if call.remote_audio.iter().any(|t| t.id() == audio.id()) {
+                            return;
+                        }
                         audio.set_enabled(call.speaker);
                         if let Some(sink) = pcm {
                             call.pcm_pumps
@@ -511,9 +518,10 @@ impl Actor {
                     }
                     MediaStreamTrack::Video(video) => {
                         let Some(mid) = mid else { return };
-                        call.pumps
-                            .push(pump(video, VideoSlot::Remote(mid.clone()), sinks, None));
-                        if call.remote_videos.insert(mid.clone()) {
+                        let feed = pump(video, VideoSlot::Remote(mid.clone()), sinks, None);
+                        if let Some(previous) = call.remote_videos.insert(mid.clone(), feed) {
+                            previous.abort();
+                        } else {
                             let id = call.id.clone();
                             self.emit(MediaEvent::Video {
                                 call_id: id,
@@ -583,7 +591,30 @@ impl Actor {
                 };
                 let id = call.id.clone();
                 match slot {
-                    VideoSlot::Camera => call.diagnostics.camera_failed = true,
+                    VideoSlot::Camera => {
+                        call.diagnostics.camera_failed = true;
+                        if call.camera.is_none() {
+                            return;
+                        }
+                        if negotiated(call) {
+                            self.set_camera(&id, false).await;
+                        } else {
+                            stop_camera(call);
+                            if let Some(line) = &call.camera_line {
+                                stop_sending(line);
+                            }
+                            self.emit(MediaEvent::Video {
+                                call_id: id.clone(),
+                                slot: VideoSlot::Camera,
+                                present: false,
+                            });
+                        }
+                        let reason = Some(text("camera_stopped"));
+                        self.emit(MediaEvent::CameraStopped {
+                            call_id: id,
+                            reason,
+                        });
+                    }
                     VideoSlot::Screen => {
                         self.set_screen_share(&id, false, None).await;
                         let reason = Some(text("screen_sharing_stopped"));
@@ -638,6 +669,7 @@ impl Actor {
             Err(e) => {
                 log::warn!("peer connection: {e:?}");
                 if !self.synthetic {
+                    crate::audio::set_mic_tap(None);
                     factory.release_platform_adm();
                 }
                 self.emit_failure(&call_id, text("couldn_t_prepare_the_audio_connection"));
@@ -669,6 +701,7 @@ impl Actor {
             screen_track: None,
             camera_line: None,
             sharing_line: None,
+            pending_camera: None,
             pending: Pending::Local,
             negotiation: 0,
             connected_once: false,
@@ -688,7 +721,7 @@ impl Actor {
                 camera_requested: options.video,
                 ..Default::default()
             },
-            remote_videos: BTreeSet::new(),
+            remote_videos: BTreeMap::new(),
         };
         add_track(&pc, MediaStreamTrack::Audio(audio), offering);
         if options.video {
@@ -770,7 +803,8 @@ impl Actor {
             crate::audio::set_mic_tap(None);
             call.factory.release_platform_adm();
         }
-        for mid in std::mem::take(&mut call.remote_videos) {
+        for (mid, feed) in std::mem::take(&mut call.remote_videos) {
+            feed.abort();
             let event = MediaEvent::Video {
                 call_id: call.id.clone(),
                 slot: VideoSlot::Remote(mid),
@@ -881,6 +915,8 @@ impl Actor {
                 log::info!("remote SDP accepted");
                 if !provisional {
                     self.wait_for_connection();
+                    self.drop_ended_remote_videos();
+                    self.apply_pending_camera().await;
                 }
             }
         }
@@ -941,6 +977,7 @@ impl Actor {
             return;
         }
         if self.current(generation).is_some() {
+            self.drop_ended_remote_videos();
             self.wait_for_gathering(Pending::RenegotiationAnswer);
         }
     }
@@ -1222,15 +1259,15 @@ impl Actor {
         let Some(call) = self.call_mut(call_id) else {
             return;
         };
-        // Before the first answer, or with a negotiation in flight: only the track changes.
-        if call.pc.current_remote_description().is_none()
-            || call.pc.signaling_state() != SignalingState::Stable
-        {
+        // Before the first answer, or with a negotiation in flight: the track only, the line later.
+        if !negotiated(call) {
             if let Some(track) = &call.camera_track {
                 track.set_enabled(on);
             }
+            call.pending_camera = Some(on);
             return;
         }
+        call.pending_camera = None;
         let Some(line) = video_line(call, false) else {
             return;
         };
@@ -1265,6 +1302,59 @@ impl Actor {
         }
         self.renegotiate(if on { "camera on" } else { "camera off" }, false)
             .await;
+    }
+
+    /// Remote lines the last negotiation stopped receiving on: their video is gone.
+    fn drop_ended_remote_videos(&mut self) {
+        let Some(call) = self.call.as_mut() else {
+            return;
+        };
+        let receiving: BTreeSet<String> = call
+            .pc
+            .transceivers()
+            .into_iter()
+            .filter(|t| {
+                matches!(
+                    t.current_direction(),
+                    Some(RtpTransceiverDirection::SendRecv | RtpTransceiverDirection::RecvOnly)
+                )
+            })
+            .filter_map(|t| t.mid())
+            .collect();
+        let ended: Vec<String> = call
+            .remote_videos
+            .keys()
+            .filter(|mid| !receiving.contains(*mid))
+            .cloned()
+            .collect();
+        for mid in &ended {
+            if let Some(feed) = call.remote_videos.remove(mid) {
+                feed.abort();
+            }
+        }
+        let id = call.id.clone();
+        for mid in ended {
+            self.emit(MediaEvent::Video {
+                call_id: id.clone(),
+                slot: VideoSlot::Remote(mid),
+                present: false,
+            });
+        }
+    }
+
+    /// Applies a camera change asked while the line couldn't renegotiate, if it still differs.
+    async fn apply_pending_camera(&mut self) {
+        let Some(call) = self.call.as_mut() else {
+            return;
+        };
+        let Some(on) = call.pending_camera.take() else {
+            return;
+        };
+        let sending = call.camera_track.is_some() && sends(call.camera_line.as_ref());
+        if on != sending {
+            let id = call.id.clone();
+            self.set_camera(&id, on).await;
+        }
     }
 
     async fn set_screen_share(&mut self, call_id: &str, on: bool, source: Option<ScreenSource>) {
@@ -1432,6 +1522,12 @@ fn send_profile(sdp: &str) -> String {
     }
     sdp.replace("profile-level-id=42C02A", "profile-level-id=640C2A")
         .replace("profile-level-id=42c02a", "profile-level-id=640c2a")
+}
+
+/// An answer is in and no offer is pending: a line change can renegotiate now.
+fn negotiated(call: &Call) -> bool {
+    call.pc.current_remote_description().is_some()
+        && call.pc.signaling_state() == SignalingState::Stable
 }
 
 /// The last negotiation lets this line send.

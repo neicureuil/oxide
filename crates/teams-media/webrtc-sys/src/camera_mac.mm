@@ -10,6 +10,8 @@
 #include "sdk/objc/native/api/video_frame_buffer.h"
 #include "webrtc-sys/src/camera_mac.rs.h"
 
+#include <atomic>
+
 @interface TeamsCameraDelegate : NSObject <RTC_OBJC_TYPE(RTCVideoCapturerDelegate)>
 - (instancetype)initWithSource:(std::shared_ptr<livekit_ffi::VideoTrackSource>)source;
 @end
@@ -41,10 +43,27 @@
 
 namespace livekit_ffi {
 
-MacCamera::MacCamera(void* capturer, void* delegate)
-    : capturer_(capturer), delegate_(delegate) {}
+namespace {
+
+// Reports a capture failure to Rust once, from whichever AVFoundation callback sees it first.
+struct FailureOnce {
+  explicit FailureOnce(rust::Box<CameraFailure> failure) : failure(std::move(failure)) {}
+  void fire() {
+    if (!fired.exchange(true)) camera_failed(*failure);
+  }
+  rust::Box<CameraFailure> failure;
+  std::atomic<bool> fired{false};
+};
+
+}  // namespace
+
+MacCamera::MacCamera(void* capturer, void* delegate, void* observers)
+    : capturer_(capturer), delegate_(delegate), observers_(observers) {}
 
 MacCamera::~MacCamera() {
+  for (id observer in (NSArray*)observers_)
+    [[NSNotificationCenter defaultCenter] removeObserver:observer];
+  [(id)observers_ release];
   stop();
   [(id)capturer_ release];
   [(id)delegate_ release];
@@ -65,7 +84,8 @@ static int32_t width_of(AVCaptureDeviceFormat* format) {
 
 std::unique_ptr<MacCamera> start_mac_camera(std::shared_ptr<VideoTrackSource> source,
                                             rust::String unique_id,
-                                            rust::String name) {
+                                            rust::String name,
+                                            rust::Box<CameraFailure> failure) {
   @autoreleasepool {
     NSArray<AVCaptureDevice*>* devices = [RTC_OBJC_TYPE(RTCCameraVideoCapturer) captureDevices];
     NSString* wanted_id = [NSString stringWithUTF8String:std::string(unique_id).c_str()];
@@ -98,8 +118,25 @@ std::unique_ptr<MacCamera> start_mac_camera(std::shared_ptr<VideoTrackSource> so
     TeamsCameraDelegate* delegate = [[TeamsCameraDelegate alloc] initWithSource:source];
     RTC_OBJC_TYPE(RTCCameraVideoCapturer)* capturer =
         [[RTC_OBJC_TYPE(RTCCameraVideoCapturer) alloc] initWithDelegate:delegate];
-    [capturer startCaptureWithDevice:device format:format fps:fps];
-    return std::make_unique<MacCamera>((void*)capturer, (void*)delegate);
+    auto once = std::make_shared<FailureOnce>(std::move(failure));
+    [capturer startCaptureWithDevice:device
+                              format:format
+                                 fps:fps
+                   completionHandler:^(NSError* error) {
+                     if (error) once->fire();
+                   }];
+    NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
+    NSArray* observers = [@[
+      [center addObserverForName:AVCaptureSessionRuntimeErrorNotification
+                          object:capturer.captureSession
+                           queue:nil
+                      usingBlock:^(NSNotification*) { once->fire(); }],
+      [center addObserverForName:AVCaptureDeviceWasDisconnectedNotification
+                          object:device
+                           queue:nil
+                      usingBlock:^(NSNotification*) { once->fire(); }],
+    ] retain];
+    return std::make_unique<MacCamera>((void*)capturer, (void*)delegate, (void*)observers);
   }
 }
 

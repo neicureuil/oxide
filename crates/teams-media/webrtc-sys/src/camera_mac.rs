@@ -1,5 +1,12 @@
 //! Teams fork: the macOS camera through libwebrtc's `RTCCameraVideoCapturer`.
 
+/// Runs once when the capture can't start or stops on its own.
+pub struct CameraFailure(pub Box<dyn Fn() + Send + Sync>);
+
+fn camera_failed(failure: &CameraFailure) {
+    (failure.0)()
+}
+
 #[cxx::bridge(namespace = "livekit_ffi")]
 pub mod ffi {
     unsafe extern "C++" {
@@ -12,7 +19,13 @@ pub mod ffi {
             source: SharedPtr<VideoTrackSource>,
             unique_id: String,
             name: String,
+            failure: Box<CameraFailure>,
         ) -> UniquePtr<MacCamera>;
+    }
+
+    extern "Rust" {
+        type CameraFailure;
+        fn camera_failed(failure: &CameraFailure);
     }
 }
 
