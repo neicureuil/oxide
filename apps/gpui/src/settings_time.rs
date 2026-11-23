@@ -1,36 +1,7 @@
 //! Local dates for the Calls screen and the settings forms: the macOS app gets them from Foundation,
-//! here they come from libc's `localtime_r`/`mktime` (no date crate in this app).
+//! here they come from chrono's view of the system time zone, on every platform.
 use crate::oxide::{english, tr, trf};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-/// macOS `struct tm`.
-#[repr(C)]
-struct Tm {
-    tm_sec: i32,
-    tm_min: i32,
-    tm_hour: i32,
-    tm_mday: i32,
-    tm_mon: i32,
-    tm_year: i32,
-    tm_wday: i32,
-    tm_yday: i32,
-    tm_isdst: i32,
-    tm_gmtoff: i64,
-    tm_zone: *mut std::ffi::c_char,
-}
-impl Default for Tm {
-    fn default() -> Self {
-        // SAFETY: integers and a null pointer: all zeroes is a valid `tm`.
-        unsafe { std::mem::zeroed() }
-    }
-}
-
-// settings_time.rs and calendar_dates.rs each declare `struct tm` with the same C layout.
-#[allow(clashing_extern_declarations)]
-unsafe extern "C" {
-    fn localtime_r(time: *const i64, out: *mut Tm) -> *mut Tm;
-    fn mktime(tm: *mut Tm) -> i64;
-}
 
 /// A moment in the Mac's time zone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,32 +24,53 @@ pub fn now() -> i64 {
 }
 
 pub fn local(epoch: i64) -> Local {
-    let mut tm = Tm::default();
-    // SAFETY: both pointers are valid for the call; `localtime_r` writes only `tm`.
-    unsafe { localtime_r(&epoch, &mut tm) };
+    use chrono::{Datelike, TimeZone, Timelike};
+    let Some(t) = chrono::Local.timestamp_opt(epoch, 0).earliest() else {
+        return Local {
+            year: 1970,
+            month: 1,
+            day: 1,
+            hour: 0,
+            minute: 0,
+            weekday: 4,
+        };
+    };
     Local {
-        year: tm.tm_year + 1900,
-        month: (tm.tm_mon + 1) as u32,
-        day: tm.tm_mday as u32,
-        hour: tm.tm_hour as u32,
-        minute: tm.tm_min as u32,
-        weekday: tm.tm_wday as u32,
+        year: t.year(),
+        month: t.month(),
+        day: t.day(),
+        hour: t.hour(),
+        minute: t.minute(),
+        weekday: t.weekday().num_days_from_sunday(),
     }
 }
 
-/// Epoch seconds of a local wall time; out-of-range fields roll over (day 32 is the next month's 1st).
+/// Epoch seconds of a local wall time; out-of-range fields roll over (day 32 is the next month's 1st), and a
+/// time skipped by a clock change moves past it, as `mktime` does.
 pub fn from_local(year: i32, month: i32, day: i32, hour: i32, minute: i32) -> i64 {
-    let mut tm = Tm {
-        tm_year: year - 1900,
-        tm_mon: month - 1,
-        tm_mday: day,
-        tm_hour: hour,
-        tm_min: minute,
-        tm_isdst: -1,
-        ..Tm::default()
+    use chrono::{Duration, NaiveDate, TimeZone};
+    let months = year as i64 * 12 + (month as i64 - 1);
+    let Some(first) = NaiveDate::from_ymd_opt(
+        months.div_euclid(12) as i32,
+        months.rem_euclid(12) as u32 + 1,
+        1,
+    ) else {
+        return 0;
     };
-    // SAFETY: `tm` is a valid, owned struct; `mktime` normalises it in place.
-    unsafe { mktime(&mut tm) }
+    let wall = first.and_hms_opt(0, 0, 0).unwrap_or_default()
+        + Duration::days(day as i64 - 1)
+        + Duration::hours(hour as i64)
+        + Duration::minutes(minute as i64);
+    let local = chrono::Local;
+    local
+        .from_local_datetime(&wall)
+        .earliest()
+        .or_else(|| {
+            local
+                .from_local_datetime(&(wall + Duration::hours(1)))
+                .earliest()
+        })
+        .map_or(0, |t| t.timestamp())
 }
 
 /// Start of the local day holding `epoch`.

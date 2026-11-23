@@ -1,46 +1,7 @@
 //! Local calendar arithmetic and date texts (`CalendarModel.swift`'s `CalendarDates`, `CalendarText`).
-//! Days are civil dates; events are UTC instants; the C library's time zone converts between the two,
-//! since this app has no date crate. Weeks start on Monday, as in the Swift app.
+//! Days are civil dates; events are UTC instants; the system time zone converts between the two
+//! (`settings_time`). Weeks start on Monday, as in the Swift app.
 use crate::oxide::{english, tr, trf};
-use std::ffi::{c_char, c_int, c_long};
-
-#[repr(C)]
-struct Tm {
-    sec: c_int,
-    min: c_int,
-    hour: c_int,
-    mday: c_int,
-    mon: c_int,
-    year: c_int,
-    wday: c_int,
-    yday: c_int,
-    isdst: c_int,
-    gmtoff: c_long,
-    zone: *const c_char,
-}
-
-// settings_time.rs and calendar_dates.rs each declare `struct tm` with the same C layout.
-#[allow(clashing_extern_declarations)]
-unsafe extern "C" {
-    fn localtime_r(time: *const i64, out: *mut Tm) -> *mut Tm;
-    fn mktime(tm: *mut Tm) -> i64;
-}
-
-fn empty_tm() -> Tm {
-    Tm {
-        sec: 0,
-        min: 0,
-        hour: 0,
-        mday: 1,
-        mon: 0,
-        year: 70,
-        wday: 0,
-        yday: 0,
-        isdst: -1,
-        gmtoff: 0,
-        zone: std::ptr::null(),
-    }
-}
 
 /// A local calendar day, as days since 1970-01-01.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -110,14 +71,7 @@ impl Day {
     /// The instant at `hour:minute` local time that day (the next valid time in a DST gap).
     pub fn at(self, hour: u32, minute: u32) -> i64 {
         let (y, m, d) = self.ymd();
-        let mut tm = empty_tm();
-        tm.year = y - 1900;
-        tm.mon = m as c_int - 1;
-        tm.mday = d as c_int;
-        tm.hour = hour as c_int;
-        tm.min = minute as c_int;
-        // SAFETY: `tm` is a valid, initialised `struct tm`.
-        unsafe { mktime(&mut tm) }
+        crate::settings_time::from_local(y, m as i32, d as i32, hour as i32, minute as i32)
     }
     /// Local midnight.
     pub fn start(self) -> i64 {
@@ -156,14 +110,8 @@ pub fn days_in_month(y: i32, m: u32) -> u32 {
 
 /// Day, hour and minute of an instant, in local time.
 pub fn local(t: i64) -> (Day, u32, u32) {
-    let mut tm = empty_tm();
-    // SAFETY: both pointers are valid for the call.
-    unsafe { localtime_r(&t, &mut tm) };
-    (
-        Day::from_ymd(tm.year + 1900, tm.mon as u32 + 1, tm.mday as u32),
-        tm.hour as u32,
-        tm.min as u32,
-    )
+    let l = crate::settings_time::local(t);
+    (Day::from_ymd(l.year, l.month, l.day), l.hour, l.minute)
 }
 
 pub fn now() -> i64 {
