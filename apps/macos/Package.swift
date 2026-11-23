@@ -5,10 +5,6 @@ import PackageDescription
 let package = Package(
     name: "Oxide",
     platforms: [.macOS(.v14)],
-    dependencies: [
-        // libwebrtc with macOS audio device selection; symbols are prefixed LKRTC.
-        .package(url: "https://github.com/livekit/webrtc-xcframework", exact: "144.7559.15"),
-    ],
     targets: [
         .binaryTarget(name: "OxideCoreFFI", path: "OxideCore.xcframework"),
         .target(
@@ -18,11 +14,29 @@ let package = Package(
                 .linkedFramework("Security"),
                 .linkedFramework("SystemConfiguration"),
                 .linkedFramework("CoreFoundation"),
+                // The call engine's libwebrtc (crates/teams-media); `-ObjC` keeps its codec factories' categories.
+                .linkedLibrary("c++"),
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("AudioToolbox"),
+                .linkedFramework("CoreAudio"),
+                .linkedFramework("CoreMedia"),
+                .linkedFramework("CoreVideo"),
+                .linkedFramework("VideoToolbox"),
+                .linkedFramework("CoreGraphics"),
+                .linkedFramework("ScreenCaptureKit"),
+                .linkedFramework("IOSurface"),
+                .linkedFramework("IOKit"),
+                .linkedFramework("Metal"),
+                .linkedFramework("MetalKit"),
+                .linkedFramework("QuartzCore"),
+                .linkedFramework("OpenGL"),
+                .linkedFramework("AppKit"),
+                .unsafeFlags(["-Xlinker", "-ObjC"]),
             ]
         ),
         .executableTarget(
             name: "Oxide",
-            dependencies: ["OxideCore", .product(name: "LiveKitWebRTC", package: "webrtc-xcframework")]
+            dependencies: ["OxideCore"]
         ),
         .testTarget(name: "OxideTests", dependencies: ["Oxide", "OxideCore"]),
     ],

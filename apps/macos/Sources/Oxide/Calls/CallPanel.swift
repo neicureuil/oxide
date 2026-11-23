@@ -1,4 +1,3 @@
-import LiveKitWebRTC
 import SwiftUI
 import OxideCore
 
@@ -106,7 +105,7 @@ private struct ActiveCallBox: View {
 }
 
 struct VideoTile: View {
-    let track: LKRTCVideoTrack?
+    let track: VideoFeed?
     let mirrored: Bool
     let placeholder: String
     var fit = false
@@ -124,7 +123,7 @@ struct VideoTile: View {
 
 /// A WebRTC video track through `AVSampleBufferDisplayLayer`: the prebuilt framework has no macOS video view.
 struct VideoView: NSViewRepresentable {
-    let track: LKRTCVideoTrack
+    let track: VideoFeed
     let mirrored: Bool
     var fit = false
 

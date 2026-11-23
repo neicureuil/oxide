@@ -8,6 +8,8 @@ mod avatars;
 mod calendar_mock;
 #[cfg(feature = "demo")]
 mod calls_mock;
+#[cfg(feature = "media")]
+mod call_media;
 mod cards;
 mod conversations;
 mod disk_cache;

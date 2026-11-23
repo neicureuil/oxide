@@ -9,14 +9,7 @@ APP="target/Oxide.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/Fonts"
 cp "$BIN" "$APP/Contents/MacOS/Oxide"
-# libwebrtc ships as a dynamic framework: embed it and let the binary find it.
-mkdir -p "$APP/Contents/Frameworks"
-WEBRTC="$(dirname "$BIN")/LiveKitWebRTC.framework"
-[ -d "$WEBRTC" ] || WEBRTC="$(find apps/macos/.build/artifacts -path "*macos-arm64_x86_64/LiveKitWebRTC.framework" -maxdepth 6 | head -1)"
-cp -R "$WEBRTC" "$APP/Contents/Frameworks/"
-if ! otool -l "$APP/Contents/MacOS/Oxide" | grep -q "@executable_path/../Frameworks"; then
-    install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/Oxide"
-fi
+# libwebrtc is linked statically into the core (crates/teams-media): no framework to embed.
 cp apps/macos/Resources/Fonts/* "$APP/Contents/Resources/Fonts/"
 cp apps/macos/Resources/AppIcon.icns "$APP/Contents/Resources/"
 # The version lives in Cargo.toml's [workspace.package]; the build number counts commits (override with BUILD_NUMBER).
@@ -63,6 +56,5 @@ IDENTITY="${SIGN_IDENTITY:--}"
 if [ "$IDENTITY" = - ]; then
     echo "Signature ad hoc : le Trousseau redemandera après chaque build (SIGN_IDENTITY=\"…\" pour un certificat)." >&2
 fi
-codesign --force --sign "$IDENTITY" "$APP/Contents/Frameworks/LiveKitWebRTC.framework" >/dev/null
 codesign --force --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP" >/dev/null
 echo "$APP ($VERSION, build $BUILD)"

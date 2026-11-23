@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/teams-auth", "crates/teams-chat", "crates/teams-calendar", "crates/teams-files", "crates/teams-calling", "crates/teams-realtime", "crates/teams-core", "crates/teams-probe", "crates/teams-i18n"]
+members = ["crates/teams-auth", "crates/teams-chat", "crates/teams-calendar", "crates/teams-files", "crates/teams-calling", "crates/teams-realtime", "crates/teams-core", "crates/teams-probe", "crates/teams-i18n", "crates/teams-media", "crates/teams-media/libwebrtc", "crates/teams-media/webrtc-sys"]
 
 [workspace.package]
 version = "0.11.0"
@@ -16,6 +16,7 @@ teams-chat = { path = "crates/teams-chat" }
 teams-calling = { path = "crates/teams-calling" }
 teams-realtime = { path = "crates/teams-realtime" }
 teams-i18n = { path = "crates/teams-i18n" }
+teams-media = { path = "crates/teams-media" }
 http = "1.5.0"
 url = "2.5.8"
 thiserror = "2.0.21"
@@ -35,3 +36,8 @@ lto = "fat"
 codegen-units = 1
 strip = "symbols"
 panic = "unwind"
+
+# Build scripts and proc macros: rustc can't load a proc macro whose symbols were stripped (the media
+# engine's build dependencies hit it under the remapped RUSTFLAGS of scripts/build-core.sh).
+[profile.release.build-override]
+strip = false

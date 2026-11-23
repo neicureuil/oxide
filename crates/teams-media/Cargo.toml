@@ -1,0 +1,23 @@
+[package]
+name = "teams-media"
+description = "Teams call media on libwebrtc: one peer connection, Opus, H264, screen share."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+libwebrtc = { path = "libwebrtc" }
+log = "0.4"
+nokhwa = { version = "0.10", features = ["input-native"] }
+teams-i18n.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
+tokio-stream = "0.1"
+
+# Wayland screen sharing asks the XDG portal over GDBus, which needs a running GLib loop.
+[target.'cfg(target_os = "linux")'.dependencies]
+libwebrtc = { path = "libwebrtc", features = ["glib-main-loop"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+teams-calling.workspace = true

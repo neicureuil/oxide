@@ -1,0 +1,25 @@
+[package]
+# Fork of LiveKit's webrtc-sys 0.3.55 (github.com/livekit/rust-sdks), trimmed for Teams calls: see FORK.md.
+# The package keeps its upstream name: cxx derives the generated headers' include prefix from it.
+name = "webrtc-sys"
+version = "0.3.55"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "Unsafe bindings to libwebrtc (Teams fork)"
+build = "build.rs"
+
+[lib]
+name = "webrtc_sys"
+path = "src/lib.rs"
+
+[dependencies]
+cxx = "1.0"
+log = "0.4"
+
+[build-dependencies]
+webrtc-sys-build = "0.3.21"
+cxx-build = "1.0"
+glob = "0.3"
+cc = { version = "1.0", features = ["parallel"] }
+pkg-config = "0.3.22"

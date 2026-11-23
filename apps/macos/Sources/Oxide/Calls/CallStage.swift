@@ -1,4 +1,3 @@
-import LiveKitWebRTC
 import SwiftUI
 import OxideCore
 
@@ -60,7 +59,7 @@ struct StageTile: Identifiable, Equatable {
     let name: String
     var muted = false
     var speaking = false
-    var video: LKRTCVideoTrack?
+    var video: VideoFeed?
     var mirrored = false
     var isMe = false
     var isScreen = false
@@ -98,7 +97,7 @@ struct CallStage: View {
     }
 
     /// The participant's camera line, or the only remote video of a direct 1:1 call.
-    private func camera(of id: String, alone: Bool) -> LKRTCVideoTrack? {
+    private func camera(of id: String, alone: Bool) -> VideoFeed? {
         if let view = call.videos.first(where: { !$0.sharing && $0.participantId == id }) {
             return store.media.remoteVideos[view.mid]
         }
@@ -273,7 +272,7 @@ struct ParticipantTile: View {
     let id: String
     let muted: Bool
     let speaking: Bool
-    var video: LKRTCVideoTrack?
+    var video: VideoFeed?
     var mirrored = false
     var pinned = false
     @State private var pulse = false
