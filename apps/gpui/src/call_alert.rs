@@ -1,39 +1,83 @@
 //! Rings an incoming call (`IncomingCallAlert.swift`): sound and Dock attention; and plays the ringback tone
 //! while an outgoing call rings (`Ringback.swift`). Both on the output chosen in Settings.
-use crate::media_devices;
-use crate::media_objc::{self, Obj, ns};
 use crate::prefs::Prefs;
-use objc2::msg_send;
+use sound::Sound;
 use teams_core::{CallPart, CallPhaseView};
 
-/// `[NSSound play]` on the chosen output, like the calls, rather than the system default.
-fn play_on_chosen_speaker(sound: &Obj, prefs: &Prefs) {
-    unsafe {
-        if let Some(uid) = media_devices::resolved_speaker_uid(prefs) {
-            let _: () = msg_send![&**sound, setPlaybackDeviceIdentifier: &*ns(&uid)];
+/// The sounds, on the output chosen in Settings like the calls: `NSSound` on macOS. Elsewhere none yet (the call's
+/// banner and window still show it).
+#[cfg(target_os = "macos")]
+mod sound {
+    use crate::media_devices;
+    use crate::objc_util::{self, Obj, ns};
+    use crate::prefs::Prefs;
+    use objc2::msg_send;
+
+    pub struct Sound(Obj);
+
+    impl Sound {
+        /// A system alert sound by name.
+        pub fn named(name: &str) -> Option<Self> {
+            let cls = objc_util::class(c"NSSound")?;
+            let sound: Option<Obj> = unsafe { msg_send![cls, soundNamed: &*ns(name)] };
+            sound.map(Self)
         }
-        let _: bool = msg_send![&**sound, play];
+
+        /// A WAV file's bytes.
+        pub fn wav(data: &[u8]) -> Option<Self> {
+            let cls = objc_util::class(c"NSData")?;
+            let data: Obj = unsafe {
+                msg_send![cls, dataWithBytes: data.as_ptr().cast::<std::ffi::c_void>(), length: data.len()]
+            };
+            let sound: Option<Obj> =
+                unsafe { msg_send![objc_util::alloc(c"NSSound")?, initWithData: &*data] };
+            sound.map(Self)
+        }
+
+        /// Plays in a loop at `volume` on the chosen output, rather than the system default.
+        pub fn play_looping(&self, volume: f32, prefs: &Prefs) {
+            unsafe {
+                let _: () = msg_send![&*self.0, setLoops: true];
+                let _: () = msg_send![&*self.0, setVolume: volume];
+                if let Some(uid) = media_devices::resolved_speaker_uid(prefs) {
+                    let _: () = msg_send![&*self.0, setPlaybackDeviceIdentifier: &*ns(&uid)];
+                }
+                let _: bool = msg_send![&*self.0, play];
+            }
+        }
+    }
+
+    impl Drop for Sound {
+        fn drop(&mut self) {
+            unsafe {
+                let _: bool = msg_send![&*self.0, stop];
+            }
+        }
     }
 }
 
-fn stop_sound(sound: Option<Obj>) {
-    if let Some(sound) = sound {
-        unsafe {
-            let _: bool = msg_send![&*sound, stop];
-        }
-    }
-}
+#[cfg(not(target_os = "macos"))]
+mod sound {
+    use crate::prefs::Prefs;
 
-fn app() -> Option<Obj> {
-    let cls = media_objc::class(c"NSApplication")?;
-    unsafe { msg_send![cls, sharedApplication] }
+    pub struct Sound;
+
+    impl Sound {
+        pub fn named(_name: &str) -> Option<Self> {
+            None
+        }
+        pub fn wav(_data: &[u8]) -> Option<Self> {
+            None
+        }
+        pub fn play_looping(&self, _volume: f32, _prefs: &Prefs) {}
+    }
 }
 
 /// Rings an incoming call: sound and Dock attention.
 #[derive(Default)]
 pub struct IncomingAlert {
     ringing: Option<String>,
-    sound: Option<Obj>,
+    sound: Option<Sound>,
     attention: Option<isize>,
 }
 
@@ -48,23 +92,12 @@ impl IncomingAlert {
         self.stop();
         let Some(call) = call else { return };
         self.ringing = Some(call.id.clone());
-        if call_sounds {
-            let named = |name: &str| -> Option<Obj> {
-                let cls = media_objc::class(c"NSSound")?;
-                unsafe { msg_send![cls, soundNamed: &*ns(name)] }
-            };
-            if let Some(sound) = named("Submarine").or_else(|| named("Glass")) {
-                unsafe {
-                    let _: () = msg_send![&*sound, setLoops: true];
-                }
-                play_on_chosen_speaker(&sound, prefs);
-                self.sound = Some(sound);
-            }
+        if call_sounds && let Some(sound) = Sound::named("Submarine").or_else(|| Sound::named("Glass")) {
+            sound.play_looping(1., prefs);
+            self.sound = Some(sound);
         }
-        if let Some(app) = app() {
-            // NSCriticalRequest: bounces until the app is activated or the request cancelled.
-            self.attention = Some(unsafe { msg_send![&*app, requestUserAttention: 0usize] });
-        }
+        // Bounces until the app is activated or the request cancelled.
+        self.attention = crate::platform::request_attention(true);
         // In the background, a banner with Accept / Decline (`NotificationRouter.showCall`).
         if !crate::platform::is_active() {
             crate::platform::notify_call(&call.id, &call.title, call.offers_video);
@@ -72,11 +105,9 @@ impl IncomingAlert {
     }
 
     fn stop(&mut self) {
-        stop_sound(self.sound.take());
-        if let (Some(attention), Some(app)) = (self.attention.take(), app()) {
-            unsafe {
-                let _: () = msg_send![&*app, cancelUserAttentionRequest: attention];
-            }
+        self.sound = None;
+        if let Some(attention) = self.attention.take() {
+            crate::platform::cancel_attention(attention);
         }
         if let Some(id) = self.ringing.take() {
             crate::platform::withdraw_call(&id);
@@ -88,7 +119,7 @@ impl IncomingAlert {
 #[derive(Default)]
 pub struct Ringback {
     ringing: Option<String>,
-    sound: Option<Obj>,
+    sound: Option<Sound>,
 }
 
 impl Ringback {
@@ -99,30 +130,17 @@ impl Ringback {
         if call.map(|c| &c.id) == self.ringing.as_ref() {
             return;
         }
-        stop_sound(self.sound.take());
+        self.sound = None;
         self.ringing = None;
         let Some(call) = call else { return };
         if !call_sounds {
             return;
         }
         self.ringing = Some(call.id.clone());
-        let Some(sound) = tone_sound() else { return };
-        unsafe {
-            let _: () = msg_send![&*sound, setLoops: true];
-            let _: () = msg_send![&*sound, setVolume: 0.35f32];
-        }
-        play_on_chosen_speaker(&sound, prefs);
+        let Some(sound) = Sound::wav(&tone()) else { return };
+        sound.play_looping(0.35, prefs);
         self.sound = Some(sound);
     }
-}
-
-fn tone_sound() -> Option<Obj> {
-    let data = tone();
-    let cls = media_objc::class(c"NSData")?;
-    let data: Obj = unsafe {
-        msg_send![cls, dataWithBytes: data.as_ptr().cast::<std::ffi::c_void>(), length: data.len()]
-    };
-    unsafe { msg_send![media_objc::alloc(c"NSSound")?, initWithData: &*data] }
 }
 
 /// One 5 s period as 16-bit mono WAV.

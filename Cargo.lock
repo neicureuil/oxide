@@ -4246,9 +4246,9 @@ checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
 
 [[package]]
 name = "libc"
-version = "0.2.190"
+version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
+checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "libfuzzer-sys"
@@ -5333,6 +5333,7 @@ dependencies = [
  "futures",
  "gpui",
  "image",
+ "log",
  "objc2",
  "objc2-app-kit",
  "objc2-avf-audio",
@@ -5340,10 +5341,12 @@ dependencies = [
  "objc2-quick-look-ui",
  "objc2-user-notifications",
  "phosphor-svgs",
- "reqwest",
+ "reqwest 0.13.5",
  "serde",
  "serde_json",
+ "teams-calling",
  "teams-core",
+ "teams-media",
  "unicode-segmentation",
  "wry",
 ]

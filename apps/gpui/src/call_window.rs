@@ -338,6 +338,7 @@ impl Render for CallView {
             return div().into_any_element();
         };
         let keys = self.oxide.clone();
+        crate::media_video::sweep(window);
         let content = oxide.update(cx, |this, cx| root(this, window, cx));
         div()
             .size_full()
@@ -869,13 +870,13 @@ fn report_for(this: &mut Oxide, call: &ActiveCallView) -> Report {
     {
         return report.clone();
     }
-    let speaker = media_devices::resolved_speaker(&this.prefs);
+    let devices = media_devices::report_devices(&this.prefs, &this.ui.call.devices);
     let context = ReportContext {
-        microphones: media_devices::core_audio::devices(true).len(),
-        speakers: media_devices::core_audio::devices(false).len(),
+        microphones: devices.microphones,
+        speakers: devices.speakers,
         muted_at_end: call.muted,
-        output_muted: speaker.is_some_and(media_devices::core_audio::is_muted),
-        has_camera: media_devices::resolved_camera(&this.prefs).is_some(),
+        output_muted: devices.output_muted,
+        has_camera: devices.has_camera,
     };
     let report = Report::make(&this.ui.call.media.diagnostics, &context);
     this.ui.call.report = Some((call.id.clone(), report.clone()));

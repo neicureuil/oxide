@@ -1,168 +1,143 @@
-//! Share sheet (`ScreenSharePicker.swift`): pick a screen or a window from libwebrtc's desktop lists, then share it.
+//! Share sheet (`ScreenSharePicker.swift`): pick a screen or a window from the engine's capture lists, then share it.
+//! The lists and their thumbnails (up to 2 s each) are read on a thread of their own, one source at a time.
 use crate::icons::{Icon, icon};
 use crate::media_devices::permissions;
-use crate::media_engine::{MediaMsg, ScreenChoice};
-use crate::media_objc::{self, Obj, string};
-use crate::media_webrtc::release_native_self_reference;
-use crate::oxide::{Oxide, tr};
+use crate::media_engine::MediaMsg;
+use crate::oxide::{Oxide, tr, trf};
 use crate::widgets::{self, ButtonKind};
 use futures::channel::mpsc::UnboundedSender;
-use gpui::{AnyElement, Context, FontWeight, Image, ImageFormat, Window, div, img, prelude::*, px};
-use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject};
-use objc2::{AnyThread, DefinedClass, define_class, msg_send};
-use std::cell::RefCell;
-use std::rc::Rc;
+use gpui::{AnyElement, Context, FontWeight, RenderImage, Window, div, img, prelude::*, px};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use teams_core::{Action, CallAction};
+use teams_media::{ScreenSource, ScreenSourceKind};
+
+/// Thumbnail width, in pixels.
+const THUMBNAIL_WIDTH: u32 = 320;
 
 /// A screen or window that can be shared.
 pub struct Source {
-    pub obj: Obj,
+    pub source: ScreenSource,
     pub id: String,
     pub name: String,
     pub window: bool,
-    pub thumbnail: Option<Arc<Image>>,
+    pub thumbnail: Option<Arc<RenderImage>>,
 }
 
-/// Screens and windows that can be shared, with their thumbnails (libwebrtc's desktop lists).
-pub struct DesktopSources {
-    lists: RefCell<Vec<Obj>>,
-    pub screens: RefCell<Vec<Source>>,
-    pub windows: RefCell<Vec<Source>>,
-    delegate: Retained<ListDelegate>,
+/// What the sources thread finds, for the open sheet.
+pub enum PickerMsg {
+    Sources {
+        sheet: u64,
+        screens: Vec<ScreenSource>,
+        windows: Vec<ScreenSource>,
+    },
+    Thumbnail {
+        sheet: u64,
+        source: ScreenSource,
+        image: Arc<RenderImage>,
+    },
 }
 
-define_class!(
-    // SAFETY: NSObject has no subclassing requirements; the sender is thread-safe.
-    #[unsafe(super(NSObject))]
-    #[name = "OxideDesktopListDelegate"]
-    #[ivars = UnboundedSender<MediaMsg>]
-    struct ListDelegate;
-
-    impl ListDelegate {
-        #[unsafe(method(didDesktopSourceAdded:))]
-        fn added(&self, _source: *mut AnyObject) {}
-
-        #[unsafe(method(didDesktopSourceRemoved:))]
-        fn removed(&self, _source: *mut AnyObject) {}
-
-        #[unsafe(method(didDesktopSourceNameChanged:))]
-        fn renamed(&self, _source: *mut AnyObject) {}
-
-        #[unsafe(method(didDesktopSourceThumbnailChanged:))]
-        fn thumbnail(&self, _source: *mut AnyObject) {
-            let _ = self.ivars().unbounded_send(MediaMsg::Desktop);
-        }
-    }
-);
-
-/// An `NSImage` as PNG, for GPUI.
-fn png(image: &AnyObject) -> Option<Arc<Image>> {
-    let tiff: Option<Obj> = unsafe { msg_send![image, TIFFRepresentation] };
-    let rep_class = media_objc::class(c"NSBitmapImageRep")?;
-    let rep: Option<Obj> = unsafe { msg_send![rep_class, imageRepWithData: &*tiff?] };
-    let dictionary = media_objc::new(c"NSDictionary")?;
-    // NSBitmapImageFileTypePNG
-    let data: Option<Obj> =
-        unsafe { msg_send![&*rep?, representationUsingType: 4usize, properties: &*dictionary] };
-    let data = data?;
-    let length: usize = unsafe { msg_send![&*data, length] };
-    let bytes: *const std::ffi::c_void = unsafe { msg_send![&*data, bytes] };
-    let bytes = bytes.cast::<u8>();
-    if bytes.is_null() || length == 0 {
-        return None;
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(bytes, length) }.to_vec();
-    Some(Arc::new(Image::from_bytes(ImageFormat::Png, bytes)))
+/// The open share sheet.
+pub struct ScreenPicker {
+    /// Which sheet the thread's messages belong to.
+    sheet: u64,
+    pub screens: Vec<Source>,
+    pub windows: Vec<Source>,
+    pub selected: Option<String>,
+    pub allowed: bool,
+    /// The sources are still being listed.
+    loading: bool,
+    /// Tells the sources thread to stop once the sheet closes.
+    cancelled: Arc<AtomicBool>,
+    /// The window drawing the thumbnails, whose atlas frees them once the sheet closes.
+    drawn_in: Option<gpui::WindowId>,
 }
 
-impl DesktopSources {
-    pub fn new(tx: UnboundedSender<MediaMsg>) -> Rc<Self> {
-        let delegate = {
-            let this = ListDelegate::alloc().set_ivars(tx);
-            let delegate: Retained<ListDelegate> = unsafe { msg_send![super(this), init] };
-            delegate
-        };
-        Rc::new(Self {
-            lists: RefCell::default(),
-            screens: RefCell::default(),
-            windows: RefCell::default(),
-            delegate,
-        })
+impl ScreenPicker {
+    fn all(&self) -> impl Iterator<Item = &Source> {
+        self.screens.iter().chain(self.windows.iter())
     }
+}
 
-    pub fn load(&self) {
-        if self.lists.borrow().is_empty() {
-            let make = |kind: isize| -> Option<Obj> {
-                unsafe {
-                    msg_send![media_objc::alloc(c"LKRTCDesktopMediaList")?, initWithType: kind, delegate: &*self.delegate]
+impl Drop for ScreenPicker {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+        if let Some(window) = self.drawn_in {
+            for source in self.screens.iter_mut().chain(self.windows.iter_mut()) {
+                if let Some(image) = source.thumbnail.take() {
+                    crate::media_video::retire(window, image);
                 }
-            };
-            *self.lists.borrow_mut() = [make(0), make(1)].into_iter().flatten().collect();
+            }
         }
-        for list in self.lists.borrow().iter() {
-            let _: i32 =
-                unsafe { msg_send![&**list, UpdateSourceList: true, updateAllThumbnails: true] };
-        }
-        self.refresh();
-    }
-
-    /// Frees the lists and their streams; sources keep name and thumbnail but can no longer start a capture.
-    pub fn close(&self) {
-        self.screens.borrow_mut().clear();
-        self.windows.borrow_mut().clear();
-        for list in self.lists.borrow_mut().drain(..) {
-            release_native_self_reference(&list);
-        }
-    }
-
-    pub fn refresh(&self) {
-        let lists = self.lists.borrow();
-        if lists.len() != 2 {
-            return;
-        }
-        let sources = |list: &AnyObject, window: bool| -> Vec<Source> {
-            let all: Option<Obj> = unsafe { msg_send![list, getSources] };
-            media_objc::array(all.as_deref())
-                .into_iter()
-                .map(|obj| {
-                    // libwebrtc can leave a source without name or thumbnail, though its header says otherwise.
-                    let id: Option<Obj> = unsafe { msg_send![&*obj, sourceId] };
-                    let name: Option<Obj> = unsafe { msg_send![&*obj, name] };
-                    let thumbnail: Option<Obj> = unsafe { msg_send![&*obj, thumbnail] };
-                    Source {
-                        id: string(id.as_deref()),
-                        name: string(name.as_deref()),
-                        window,
-                        thumbnail: thumbnail.as_deref().and_then(png),
-                        obj,
-                    }
-                })
-                .collect()
-        };
-        *self.screens.borrow_mut() = sources(&lists[0], false);
-        // Not our own windows (the macOS app matches its name; ours are named after the chat or call).
-        let own = own_window_ids();
-        *self.windows.borrow_mut() = sources(&lists[1], true)
-            .into_iter()
-            .filter(|s| !s.name.trim().is_empty() && !own.contains(&s.id))
-            .collect();
-    }
-
-    fn find(&self, id: &str) -> Option<Obj> {
-        let screens = self.screens.borrow();
-        let windows = self.windows.borrow();
-        screens
-            .iter()
-            .chain(windows.iter())
-            .find(|s| s.id == id)
-            .map(|s| s.obj.clone())
     }
 }
 
-/// Window numbers of this process, as libwebrtc names window sources.
-fn own_window_ids() -> Vec<String> {
+fn source_id(source: &ScreenSource) -> String {
+    let kind = match source.kind {
+        ScreenSourceKind::Screen => "screen",
+        ScreenSourceKind::Window => "window",
+    };
+    format!("{kind}-{}", source.id)
+}
+
+/// RGBA rows into the BGRA GPUI draws.
+fn render_image(width: u32, height: u32, mut rgba: Vec<u8>) -> Option<Arc<RenderImage>> {
+    for pixel in rgba.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    let image = image::RgbaImage::from_raw(width, height, rgba)?;
+    Some(Arc::new(RenderImage::new(vec![image::Frame::new(image)])))
+}
+
+static NEXT_SHEET: AtomicU64 = AtomicU64::new(1);
+
+/// Lists screens and windows, then makes their thumbnails one by one, until the sheet closes.
+fn load(sheet: u64, cancelled: Arc<AtomicBool>, tx: UnboundedSender<MediaMsg>) {
+    let spawned = std::thread::Builder::new()
+        .name("oxide.share-sources".into())
+        .spawn(move || {
+            let screens = teams_media::screen_sources(ScreenSourceKind::Screen);
+            let own = own_window_ids();
+            let windows: Vec<ScreenSource> = teams_media::screen_sources(ScreenSourceKind::Window)
+                .into_iter()
+                // Not our own windows (the macOS app matches its name; ours are named after the chat or call).
+                .filter(|w| !w.title.trim().is_empty() && !own.contains(&w.id))
+                .collect();
+            let all: Vec<ScreenSource> = screens.iter().chain(windows.iter()).cloned().collect();
+            let _ = tx.unbounded_send(MediaMsg::Picker(PickerMsg::Sources {
+                sheet,
+                screens,
+                windows,
+            }));
+            for source in all {
+                if cancelled.load(Ordering::Acquire) {
+                    return;
+                }
+                let Some(image) = source
+                    .thumbnail(THUMBNAIL_WIDTH)
+                    .and_then(|(w, h, rgba)| render_image(w, h, rgba))
+                else {
+                    continue;
+                };
+                let _ = tx.unbounded_send(MediaMsg::Picker(PickerMsg::Thumbnail {
+                    sheet,
+                    source,
+                    image,
+                }));
+            }
+        });
+    if let Err(error) = spawned {
+        crate::media_engine::trace(&format!("share sources: {error}"));
+    }
+}
+
+/// Window numbers of this process, as the capturer names window sources on macOS.
+#[cfg(target_os = "macos")]
+fn own_window_ids() -> Vec<u64> {
+    use crate::objc_util;
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
     unsafe extern "C" {
         fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> *mut AnyObject;
     }
@@ -172,26 +147,67 @@ fn own_window_ids() -> Vec<String> {
         return Vec::new();
     };
     let pid = std::process::id() as f64;
-    media_objc::array(Some(&list))
+    objc_util::array(Some(&list))
         .iter()
-        .filter(|w| media_objc::double(media_objc::get(w, "kCGWindowOwnerPID").as_deref()) == pid)
-        .map(|w| {
-            (media_objc::double(media_objc::get(w, "kCGWindowNumber").as_deref()) as u64)
-                .to_string()
-        })
+        .filter(|w| objc_util::double(objc_util::get(w, "kCGWindowOwnerPID").as_deref()) == pid)
+        .map(|w| objc_util::double(objc_util::get(w, "kCGWindowNumber").as_deref()) as u64)
         .collect()
 }
 
-/// The open share sheet.
-pub struct ScreenPicker {
-    pub sources: Rc<DesktopSources>,
-    pub selected: Option<String>,
-    pub allowed: bool,
+/// Our windows are named after a chat or call: nothing tells them apart from the outside here.
+#[cfg(not(target_os = "macos"))]
+fn own_window_ids() -> Vec<u64> {
+    Vec::new()
 }
 
-impl ScreenPicker {
-    pub fn refresh(&mut self) {
-        self.sources.refresh();
+/// What the sources thread found, into the sheet it was started for.
+pub fn on_msg(this: &mut Oxide, msg: PickerMsg) {
+    let Some(picker) = this.ui.call.picker.as_mut() else {
+        return;
+    };
+    match msg {
+        PickerMsg::Sources {
+            sheet,
+            screens,
+            windows,
+        } if sheet == picker.sheet => {
+            let source = |source: ScreenSource| Source {
+                id: source_id(&source),
+                // Screens have no title: they're numbered.
+                name: source.title.clone(),
+                window: source.kind == ScreenSourceKind::Window,
+                thumbnail: None,
+                source,
+            };
+            picker.screens = screens.into_iter().map(source).collect();
+            for (n, screen) in picker.screens.iter_mut().enumerate() {
+                screen.name = trf(
+                    "ui.screen_share_picker.screen_number",
+                    &[("n", &(n + 1).to_string())],
+                );
+            }
+            picker.windows = windows.into_iter().map(source).collect();
+            picker.loading = false;
+            if picker.selected.is_none() {
+                picker.selected = picker.screens.first().map(|s| s.id.clone());
+            }
+        }
+        PickerMsg::Thumbnail {
+            sheet,
+            source,
+            image,
+        } if sheet == picker.sheet => {
+            let id = source_id(&source);
+            if let Some(found) = picker
+                .screens
+                .iter_mut()
+                .chain(picker.windows.iter_mut())
+                .find(|s| s.id == id)
+            {
+                found.thumbnail = Some(image);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -200,26 +216,28 @@ pub fn open(this: &mut Oxide) {
     if !allowed {
         allowed = permissions::screen_capture(true);
     }
-    let sources = DesktopSources::new(this.ui.call.media.tx.clone());
-    let mut selected = None;
-    if allowed && media_objc::available() {
-        sources.load();
-        selected = sources.screens.borrow().first().map(|s| s.id.clone());
+    let sheet = NEXT_SHEET.fetch_add(1, Ordering::Relaxed);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    if allowed {
+        load(sheet, cancelled.clone(), this.ui.call.media.tx.clone());
     }
     this.ui.call.picker = Some(ScreenPicker {
-        sources,
-        selected,
+        sheet,
+        screens: Vec::new(),
+        windows: Vec::new(),
+        selected: None,
         allowed,
+        loading: allowed,
+        cancelled,
+        drawn_in: None,
     });
 }
 
 pub fn cancel(this: &mut Oxide) {
-    if let Some(picker) = this.ui.call.picker.take() {
-        picker.sources.close();
-    }
+    this.ui.call.picker = None;
 }
 
-/// Hands the choice, with its lists, to the engine and asks the core to share.
+/// Hands the choice to the engine and asks the core to share.
 pub fn share(this: &mut Oxide) {
     let Some(picker) = this.ui.call.picker.take() else {
         return;
@@ -227,15 +245,12 @@ pub fn share(this: &mut Oxide) {
     let Some(source) = picker
         .selected
         .as_deref()
-        .and_then(|id| picker.sources.find(id))
+        .and_then(|id| picker.all().find(|s| s.id == id))
+        .map(|s| s.source.clone())
     else {
-        picker.sources.close();
         return;
     };
-    this.ui.call.media.choose_screen(Some(ScreenChoice {
-        source,
-        lists: picker.sources,
-    }));
+    this.ui.call.media.choose_screen(Some(source));
     this.send(Action::Call {
         action: CallAction::SetScreenShare { on: true },
     });
@@ -328,15 +343,19 @@ fn section(
 }
 
 /// The sheet over the call window.
-pub fn view(this: &mut Oxide, _window: &mut Window, cx: &mut Context<Oxide>) -> Option<AnyElement> {
+pub fn view(this: &mut Oxide, window: &mut Window, cx: &mut Context<Oxide>) -> Option<AnyElement> {
+    let picker = this.ui.call.picker.as_mut()?;
+    picker.drawn_in = Some(window.window_handle().window_id());
     let picker = this.ui.call.picker.as_ref()?;
     let theme = this.theme;
     let allowed = picker.allowed;
+    let loading = picker.loading;
     let selected = picker.selected.clone();
-    let sources = picker.sources.clone();
-    let body = if allowed {
-        let screens = sources.screens.borrow();
-        let windows = sources.windows.borrow();
+    let body = if allowed && loading {
+        // The lists come within a moment; thumbnails fill in after.
+        div().flex_1().into_any_element()
+    } else if allowed {
+        let (screens, windows) = (&picker.screens, &picker.windows);
         div()
             .id("share-sources")
             .flex_1()
@@ -348,7 +367,7 @@ pub fn view(this: &mut Oxide, _window: &mut Window, cx: &mut Context<Oxide>) -> 
             .child(section(
                 this,
                 tr("ui.screen_share_picker.screens"),
-                &screens,
+                screens,
                 selected.as_deref(),
                 cx,
             ))
@@ -356,7 +375,7 @@ pub fn view(this: &mut Oxide, _window: &mut Window, cx: &mut Context<Oxide>) -> 
                 d.child(section(
                     this,
                     tr("ui.screen_share_picker.windows"),
-                    &windows,
+                    windows,
                     selected.as_deref(),
                     cx,
                 ))

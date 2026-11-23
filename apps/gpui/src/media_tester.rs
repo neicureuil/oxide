@@ -2,7 +2,7 @@
 //! check, a chime on the chosen output, and a live camera preview.
 use crate::media_devices::{self, MediaKind, core_audio, permissions};
 use crate::media_engine::{MediaMsg, Window};
-use crate::media_objc::{self, AudioUnit, CMSampleBuffer, CVBuffer, Obj};
+use crate::objc_util::{self, AudioUnit, CMSampleBuffer, CVBuffer, Obj};
 use crate::media_video::FrameSlot;
 use crate::oxide::{Oxide, tr};
 use crate::prefs::Prefs;
@@ -94,7 +94,7 @@ impl MicrophoneTester {
         if self.running {
             return;
         }
-        let Some(engine) = media_objc::new(c"AVAudioEngine") else {
+        let Some(engine) = objc_util::new(c"AVAudioEngine") else {
             return;
         };
         let input: Obj = unsafe { msg_send![&*engine, inputNode] };
@@ -216,10 +216,10 @@ fn play_samples(
         return None;
     }
     let format: Obj = unsafe {
-        msg_send![media_objc::alloc(c"AVAudioFormat")?, initStandardFormatWithSampleRate: rate, channels: channels]
+        msg_send![objc_util::alloc(c"AVAudioFormat")?, initStandardFormatWithSampleRate: rate, channels: channels]
     };
     let buffer: Obj = unsafe {
-        msg_send![media_objc::alloc(c"AVAudioPCMBuffer")?, initWithPCMFormat: &*format, frameCapacity: frames as u32]
+        msg_send![objc_util::alloc(c"AVAudioPCMBuffer")?, initWithPCMFormat: &*format, frameCapacity: frames as u32]
     };
     unsafe {
         let _: () = msg_send![&*buffer, setFrameLength: frames as u32];
@@ -234,8 +234,8 @@ fn play_samples(
             }
         }
     }
-    let engine = media_objc::new(c"AVAudioEngine")?;
-    let player = media_objc::new(c"AVAudioPlayerNode")?;
+    let engine = objc_util::new(c"AVAudioEngine")?;
+    let player = objc_util::new(c"AVAudioPlayerNode")?;
     unsafe {
         let _: () = msg_send![&*engine, attachNode: &*player];
         let mixer: Obj = msg_send![&*engine, mainMixerNode];
@@ -469,9 +469,9 @@ pub struct CameraPreview {
 
 impl CameraPreview {
     pub fn new(window: Window, tx: UnboundedSender<MediaMsg>) -> Option<Self> {
-        let session = media_objc::new(c"AVCaptureSession")?;
-        let output = media_objc::new(c"AVCaptureVideoDataOutput")?;
-        let slot = FrameSlot::new(true, false, window, tx);
+        let session = objc_util::new(c"AVCaptureSession")?;
+        let output = objc_util::new(c"AVCaptureVideoDataOutput")?;
+        let slot = FrameSlot::new(true, window, tx);
         let sink = {
             let this = PreviewSink::alloc().set_ivars(slot.clone());
             let sink: Retained<PreviewSink> = unsafe { msg_send![super(this), init] };
@@ -487,10 +487,10 @@ impl CameraPreview {
             // Full-range NV12, as the window draws it.
             let key =
                 core_video::pixel_buffer::kCVPixelBufferPixelFormatTypeKey as *const AnyObject;
-            let value = media_objc::number(f64::from(
+            let value = objc_util::number(f64::from(
                 core_video::pixel_buffer::kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
             ));
-            let dictionary = media_objc::class(c"NSDictionary")?;
+            let dictionary = objc_util::class(c"NSDictionary")?;
             let settings: Obj = msg_send![dictionary, dictionaryWithObject: &*value, forKey: key];
             let _: () = msg_send![&*output, setVideoSettings: &*settings];
             let _: () = msg_send![&*output, setSampleBufferDelegate: &*sink, queue: &*queue];
@@ -523,11 +523,11 @@ impl CameraPreview {
             unsafe {
                 let _: () = msg_send![&*session, beginConfiguration];
                 let inputs: Option<Obj> = msg_send![&*session, inputs];
-                for input in media_objc::array(inputs.as_deref()) {
+                for input in objc_util::array(inputs.as_deref()) {
                     let _: () = msg_send![&*session, removeInput: &*input];
                 }
                 if let Some(device) = device {
-                    let cls = media_objc::class(c"AVCaptureDeviceInput");
+                    let cls = objc_util::class(c"AVCaptureDeviceInput");
                     let mut error: *mut AnyObject = std::ptr::null_mut();
                     let input: Option<Obj> = cls.and_then(
                         |cls| msg_send![cls, deviceInputWithDevice: &*device, error: &mut error],
@@ -542,7 +542,7 @@ impl CameraPreview {
                 let _: () = msg_send![&*session, commitConfiguration];
                 let running: bool = msg_send![&*session, isRunning];
                 let inputs: Option<Obj> = msg_send![&*session, inputs];
-                if !running && !media_objc::array(inputs.as_deref()).is_empty() {
+                if !running && !objc_util::array(inputs.as_deref()).is_empty() {
                     let _: () = msg_send![&*session, startRunning];
                 }
             }

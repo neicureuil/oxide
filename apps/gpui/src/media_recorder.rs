@@ -1,12 +1,9 @@
-//! Records the call's audio on this Mac only (not announced to the others): microphone and participants mixed
-//! into a 48 kHz mono AAC `.m4a`, streamed to disk as it goes (`LocalRecorder.swift`).
+//! Records the call's audio on this computer only (not announced to the others): microphone and participants mixed
+//! into a 48 kHz mono file streamed to disk as it goes (`LocalRecorder.swift`): AAC `.m4a` on macOS, `.wav` elsewhere.
+//! The engine hands the audio over as 16-bit PCM (`PcmTap`).
 //!
 //! Inputs convert on their audio thread and add into a small ring on a common timeline (samples since the start);
 //! a writer thread appends to the file what no input can still reach.
-use crate::media_objc::{self, Obj, ns};
-use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject};
-use objc2::{AnyThread, DefinedClass, define_class, msg_send};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -80,95 +77,181 @@ impl Core {
     }
 }
 
-/// The AAC file and a reusable buffer, used by one thread at a time.
-struct FileWriter {
-    file: Obj,
-    chunk: Obj,
-}
-unsafe impl Send for FileWriter {}
+#[cfg(target_os = "macos")]
+use mac::FileWriter;
+#[cfg(not(target_os = "macos"))]
+use wav::FileWriter;
 
-impl FileWriter {
-    fn open(path: &Path) -> Result<Self, String> {
-        let keys = [
-            ns("AVFormatIDKey"),
-            ns("AVSampleRateKey"),
-            ns("AVNumberOfChannelsKey"),
-            ns("AVEncoderBitRateKey"),
-        ];
-        // kAudioFormatMPEG4AAC
-        let values = [
-            media_objc::number(u32::from_be_bytes(*b"aac ") as f64),
-            media_objc::number(SAMPLE_RATE),
-            media_objc::number(1.),
-            media_objc::number(64_000.),
-        ];
-        let keys: Vec<&AnyObject> = keys.iter().map(|k| -> &AnyObject { k }).collect();
-        let values: Vec<&AnyObject> = values.iter().map(|v| &**v).collect();
-        let dictionary = media_objc::class(c"NSDictionary").ok_or("Foundation")?;
-        let settings: Obj = unsafe {
-            msg_send![dictionary, dictionaryWithObjects: values.as_ptr(), forKeys: keys.as_ptr(), count: keys.len()]
-        };
-        let url_class = media_objc::class(c"NSURL").ok_or("Foundation")?;
-        let path_text = ns(&path.to_string_lossy());
-        let url: Obj = unsafe { msg_send![url_class, fileURLWithPath: &*path_text] };
-        let mut error: *mut AnyObject = std::ptr::null_mut();
-        let file: Option<Obj> = unsafe {
-            msg_send![
-                media_objc::alloc(c"AVAudioFile").ok_or("AVFoundation")?,
-                initForWriting: &*url,
-                settings: &*settings,
-                commonFormat: 1usize,
-                interleaved: false,
-                error: &mut error
-            ]
-        };
-        let file = file.ok_or_else(|| media_objc::error_text(error))?;
-        let format = mono_format().ok_or("AVAudioFormat")?;
-        let chunk: Option<Obj> = unsafe {
-            msg_send![
-                media_objc::alloc(c"AVAudioPCMBuffer").ok_or("AVFoundation")?,
-                initWithPCMFormat: &*format,
-                frameCapacity: CAPACITY as u32
-            ]
-        };
-        Ok(Self {
-            file,
-            chunk: chunk.ok_or("AVAudioPCMBuffer")?,
-        })
+/// The recording's extension.
+#[cfg(target_os = "macos")]
+const EXTENSION: &str = "m4a";
+#[cfg(not(target_os = "macos"))]
+const EXTENSION: &str = "wav";
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use super::{CAPACITY, SAMPLE_RATE};
+    use crate::objc_util::{self, Obj, ns};
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use std::path::Path;
+
+    /// The AAC file and a reusable buffer, used by one thread at a time.
+    pub struct FileWriter {
+        file: Obj,
+        chunk: Obj,
     }
+    unsafe impl Send for FileWriter {}
 
-    fn write(&self, samples: &[f32]) {
-        if samples.is_empty() {
-            return;
+    impl FileWriter {
+        pub fn open(path: &Path) -> Result<Self, String> {
+            let keys = [
+                ns("AVFormatIDKey"),
+                ns("AVSampleRateKey"),
+                ns("AVNumberOfChannelsKey"),
+                ns("AVEncoderBitRateKey"),
+            ];
+            // kAudioFormatMPEG4AAC
+            let values = [
+                objc_util::number(u32::from_be_bytes(*b"aac ") as f64),
+                objc_util::number(SAMPLE_RATE),
+                objc_util::number(1.),
+                objc_util::number(64_000.),
+            ];
+            let keys: Vec<&AnyObject> = keys.iter().map(|k| -> &AnyObject { k }).collect();
+            let values: Vec<&AnyObject> = values.iter().map(|v| &**v).collect();
+            let dictionary = objc_util::class(c"NSDictionary").ok_or("Foundation")?;
+            let settings: Obj = unsafe {
+                msg_send![dictionary, dictionaryWithObjects: values.as_ptr(), forKeys: keys.as_ptr(), count: keys.len()]
+            };
+            let url_class = objc_util::class(c"NSURL").ok_or("Foundation")?;
+            let path_text = ns(&path.to_string_lossy());
+            let url: Obj = unsafe { msg_send![url_class, fileURLWithPath: &*path_text] };
+            let mut error: *mut AnyObject = std::ptr::null_mut();
+            let file: Option<Obj> = unsafe {
+                msg_send![
+                    objc_util::alloc(c"AVAudioFile").ok_or("AVFoundation")?,
+                    initForWriting: &*url,
+                    settings: &*settings,
+                    commonFormat: 1usize,
+                    interleaved: false,
+                    error: &mut error
+                ]
+            };
+            let file = file.ok_or_else(|| objc_util::error_text(error))?;
+            let format = mono_format().ok_or("AVAudioFormat")?;
+            let chunk: Option<Obj> = unsafe {
+                msg_send![
+                    objc_util::alloc(c"AVAudioPCMBuffer").ok_or("AVFoundation")?,
+                    initWithPCMFormat: &*format,
+                    frameCapacity: CAPACITY as u32
+                ]
+            };
+            Ok(Self {
+                file,
+                chunk: chunk.ok_or("AVAudioPCMBuffer")?,
+            })
         }
-        unsafe {
-            let channels: *const *mut f32 = msg_send![&*self.chunk, floatChannelData];
-            if channels.is_null() || (*channels).is_null() {
+
+        pub fn write(&self, samples: &[f32]) {
+            if samples.is_empty() {
                 return;
             }
-            std::ptr::copy_nonoverlapping(samples.as_ptr(), *channels, samples.len().min(CAPACITY));
-            let _: () = msg_send![&*self.chunk, setFrameLength: samples.len().min(CAPACITY) as u32];
-            let mut error: *mut AnyObject = std::ptr::null_mut();
-            let ok: bool = msg_send![&*self.file, writeFromBuffer: &*self.chunk, error: &mut error];
-            if !ok {
-                media_objc::trace(&format!(
-                    "recording write failed: {}",
-                    media_objc::error_text(error)
-                ));
+            unsafe {
+                let channels: *const *mut f32 = msg_send![&*self.chunk, floatChannelData];
+                if channels.is_null() || (*channels).is_null() {
+                    return;
+                }
+                std::ptr::copy_nonoverlapping(samples.as_ptr(), *channels, samples.len().min(CAPACITY));
+                let _: () = msg_send![&*self.chunk, setFrameLength: samples.len().min(CAPACITY) as u32];
+                let mut error: *mut AnyObject = std::ptr::null_mut();
+                let ok: bool = msg_send![&*self.file, writeFromBuffer: &*self.chunk, error: &mut error];
+                if !ok {
+                    crate::media_engine::trace(&format!(
+                        "recording write failed: {}",
+                        objc_util::error_text(error)
+                    ));
+                }
             }
         }
     }
+
+    fn mono_format() -> Option<Obj> {
+        unsafe {
+            msg_send![
+                objc_util::alloc(c"AVAudioFormat")?,
+                initWithCommonFormat: 1usize,
+                sampleRate: SAMPLE_RATE,
+                channels: 1u32,
+                interleaved: false
+            ]
+        }
+    }
+
 }
 
-fn mono_format() -> Option<Obj> {
-    unsafe {
-        msg_send![
-            media_objc::alloc(c"AVAudioFormat")?,
-            initWithCommonFormat: 1usize,
-            sampleRate: SAMPLE_RATE,
-            channels: 1u32,
-            interleaved: false
-        ]
+/// 16-bit mono WAV, its sizes written when it closes.
+#[cfg(not(target_os = "macos"))]
+mod wav {
+    use super::SAMPLE_RATE;
+    use std::fs::File;
+    use std::io::{BufWriter, Seek, SeekFrom, Write};
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    pub struct FileWriter {
+        file: Mutex<BufWriter<File>>,
+        bytes: Mutex<u32>,
+    }
+
+    fn header(data: u32) -> [u8; 44] {
+        let rate = SAMPLE_RATE as u32;
+        let mut h = [0u8; 44];
+        h[0..4].copy_from_slice(b"RIFF");
+        h[4..8].copy_from_slice(&(36 + data).to_le_bytes());
+        h[8..16].copy_from_slice(b"WAVEfmt ");
+        h[16..20].copy_from_slice(&16u32.to_le_bytes());
+        h[20..22].copy_from_slice(&1u16.to_le_bytes());
+        h[22..24].copy_from_slice(&1u16.to_le_bytes());
+        h[24..28].copy_from_slice(&rate.to_le_bytes());
+        h[28..32].copy_from_slice(&(rate * 2).to_le_bytes());
+        h[32..34].copy_from_slice(&2u16.to_le_bytes());
+        h[34..36].copy_from_slice(&16u16.to_le_bytes());
+        h[36..40].copy_from_slice(b"data");
+        h[40..44].copy_from_slice(&data.to_le_bytes());
+        h
+    }
+
+    impl FileWriter {
+        pub fn open(path: &Path) -> Result<Self, String> {
+            let mut file = BufWriter::new(File::create(path).map_err(|e| e.to_string())?);
+            file.write_all(&header(0)).map_err(|e| e.to_string())?;
+            Ok(Self {
+                file: Mutex::new(file),
+                bytes: Mutex::new(0),
+            })
+        }
+
+        pub fn write(&self, samples: &[f32]) {
+            let mut file = self.file.lock().unwrap();
+            let mut bytes = self.bytes.lock().unwrap();
+            for s in samples {
+                let v = (s.clamp(-1., 1.) * 32_767.) as i16;
+                if file.write_all(&v.to_le_bytes()).is_ok() {
+                    *bytes = bytes.saturating_add(2);
+                }
+            }
+        }
+    }
+
+    impl Drop for FileWriter {
+        fn drop(&mut self) {
+            let bytes = *self.bytes.lock().unwrap();
+            let file = self.file.get_mut().unwrap();
+            let _ = file.seek(SeekFrom::Start(0));
+            let _ = file.write_all(&header(bytes));
+            let _ = file.flush();
+        }
     }
 }
 
@@ -262,7 +345,7 @@ impl LocalRecorder {
                 .max(mix.base)
         };
         let samples = self.core.take(end.max(self.core.now()));
-        // AVAudioFile finishes the file when released.
+        // The file is finished when released.
         if let Some(file) = self.file.lock().unwrap().take() {
             file.write(&samples);
         }
@@ -277,7 +360,7 @@ impl Drop for LocalRecorder {
     }
 }
 
-/// `<folder>/<title> <yyyy-MM-dd HH.mm>.m4a`, never an existing file.
+/// `<folder>/<title> <yyyy-MM-dd HH.mm>.m4a` (`.wav` off macOS), never an existing file.
 pub fn default_path(title: &str, folder: &Path) -> Result<PathBuf, String> {
     std::fs::create_dir_all(folder).map_err(|e| e.to_string())?;
     let stamp = chrono::Local::now().format("%Y-%m-%d %H.%M").to_string();
@@ -292,18 +375,20 @@ pub fn default_path(title: &str, folder: &Path) -> Result<PathBuf, String> {
     }
     let name: String = name.chars().take(120).collect();
     let stem = format!("{name} {stamp}");
-    let mut path = folder.join(format!("{stem}.m4a"));
+    let mut path = folder.join(format!("{stem}.{EXTENSION}"));
     let mut copy = 2;
     while path.exists() {
-        path = folder.join(format!("{stem} {copy}.m4a"));
+        path = folder.join(format!("{stem} {copy}.{EXTENSION}"));
         copy += 1;
     }
     Ok(path)
 }
 
 pub fn default_folder() -> PathBuf {
-    let home = std::env::var_os("HOME").unwrap_or_default();
-    PathBuf::from(home).join("Documents/Oxide Recordings")
+    crate::paths::home()
+        .unwrap_or_default()
+        .join("Documents")
+        .join("Oxide Recordings")
 }
 
 /// The folder chosen in Settings, else the default one.
@@ -369,183 +454,50 @@ impl Input {
             self.core.mix(&out, self.id);
         }
     }
+}
 
-    /// A 10 ms block from the audio processing module (`LKRTCAudioBuffer`): floats in the 16-bit range, read only.
-    fn append_processing_buffer(&self, buffer: &AnyObject) {
-        let channels: usize = unsafe { msg_send![buffer, channels] };
-        let frames: usize = unsafe { msg_send![buffer, frames] };
-        if channels == 0 || frames == 0 {
-            return;
-        }
-        let mut mono = vec![0f32; frames];
-        for channel in 0..channels {
-            let data: *mut f32 = unsafe { msg_send![buffer, rawBufferForChannel: channel] };
-            if data.is_null() {
-                continue;
-            }
-            let samples = unsafe { std::slice::from_raw_parts(data, frames) };
-            for (m, s) in mono.iter_mut().zip(samples) {
-                *m += s / 32_768. / channels as f32;
-            }
-        }
-        self.append(&mono, frames as f64 * 100.);
+/// The engine's PCM (`teams_media::PcmSink`) into the recording: our microphone (the engine holds it back while
+/// muted) and the participants, each on its own input of the mix.
+pub struct PcmTap {
+    inputs: Mutex<Option<(Arc<Input>, Arc<Input>)>>,
+}
+
+impl PcmTap {
+    pub fn new(recorder: &LocalRecorder) -> Arc<Self> {
+        Arc::new(Self {
+            inputs: Mutex::new(Some((recorder.make_input(), recorder.make_input()))),
+        })
     }
 
-    /// An `AVAudioPCMBuffer` in float or 16-bit, interleaved or not, any channels.
-    fn append_pcm(&self, buffer: &AnyObject) {
-        let Some(mono) = pcm_to_mono(buffer) else {
-            return;
+    /// Lets go of the recording: late callbacks write nothing.
+    pub fn stop(&self) {
+        *self.inputs.lock().unwrap() = None;
+    }
+}
+
+impl teams_media::PcmSink for PcmTap {
+    fn on_pcm(&self, remote: bool, samples: &[i16], sample_rate: u32, channels: u32) {
+        let input = match self.inputs.lock().unwrap().as_ref() {
+            Some((microphone, participants)) => {
+                if remote { participants.clone() } else { microphone.clone() }
+            }
+            None => return,
         };
-        self.append(&mono.0, mono.1);
+        let channels = channels as usize;
+        if channels == 0 || samples.is_empty() {
+            return;
+        }
+        input.append(&to_mono(samples, channels), f64::from(sample_rate));
     }
 }
 
-/// An `AVAudioPCMBuffer`'s samples, mixed down, and its sample rate.
-fn pcm_to_mono(buffer: &AnyObject) -> Option<(Vec<f32>, f64)> {
-    let frames: u32 = unsafe { msg_send![buffer, frameLength] };
-    let format: Option<Obj> = unsafe { msg_send![buffer, format] };
-    let format = format?;
-    let rate: f64 = unsafe { msg_send![&*format, sampleRate] };
-    let channels: u32 = unsafe { msg_send![&*format, channelCount] };
-    let common: usize = unsafe { msg_send![&*format, commonFormat] };
-    let interleaved: bool = unsafe { msg_send![&*format, isInterleaved] };
-    let (frames, channels) = (frames as usize, channels as usize);
-    if frames == 0 || channels == 0 {
-        return None;
-    }
-    let mut mono = vec![0f32; frames];
-    let scale = 1. / channels as f32;
-    match common {
-        // Float32
-        1 => {
-            let data: *const *mut f32 = unsafe { msg_send![buffer, floatChannelData] };
-            mix_down(data, frames, channels, interleaved, scale, &mut mono, |s| s);
-        }
-        // Int16
-        3 => {
-            let data: *const *mut i16 = unsafe { msg_send![buffer, int16ChannelData] };
-            mix_down(data, frames, channels, interleaved, scale, &mut mono, |s| {
-                s as f32 / 32_768.
-            });
-        }
-        _ => return None,
-    }
-    Some((mono, rate))
-}
-
-fn mix_down<T: Copy>(
-    data: *const *mut T,
-    frames: usize,
-    channels: usize,
-    interleaved: bool,
-    scale: f32,
-    mono: &mut [f32],
-    value: impl Fn(T) -> f32,
-) {
-    if data.is_null() {
-        return;
-    }
-    unsafe {
-        if interleaved {
-            let samples = *data;
-            if samples.is_null() {
-                return;
-            }
-            let samples = std::slice::from_raw_parts(samples, frames * channels);
-            for (frame, m) in mono.iter_mut().enumerate() {
-                for channel in 0..channels {
-                    *m += value(samples[frame * channels + channel]) * scale;
-                }
-            }
-        } else {
-            for channel in 0..channels {
-                let samples = *data.add(channel);
-                if samples.is_null() {
-                    continue;
-                }
-                for (m, s) in mono
-                    .iter_mut()
-                    .zip(std::slice::from_raw_parts(samples, frames))
-                {
-                    *m += value(*s) * scale;
-                }
-            }
-        }
-    }
-}
-
-pub struct TapState {
-    input: Option<Arc<Input>>,
-    muted: bool,
-}
-
-define_class!(
-    /// The microphone after libwebrtc's processing: a passthrough that copies into the recording, if any, while unmuted.
-    // SAFETY: NSObject has no subclassing requirements; the ivars are behind a lock.
-    #[unsafe(super(NSObject))]
-    #[name = "OxideMicrophoneTap"]
-    #[ivars = Mutex<TapState>]
-    pub struct MicrophoneTap;
-
-    impl MicrophoneTap {
-        #[unsafe(method(audioProcessingInitializeWithSampleRate:channels:))]
-        fn initialize(&self, _rate: usize, _channels: usize) {}
-
-        #[unsafe(method(audioProcessingProcess:))]
-        fn process(&self, buffer: *mut AnyObject) {
-            let input = {
-                let state = self.ivars().lock().unwrap();
-                if state.muted { None } else { state.input.clone() }
-            };
-            if let (Some(input), Some(buffer)) = (input, unsafe { buffer.as_ref() }) {
-                input.append_processing_buffer(buffer);
-            }
-        }
-
-        #[unsafe(method(audioProcessingRelease))]
-        fn release(&self) {}
-    }
-);
-
-impl MicrophoneTap {
-    pub fn new() -> Retained<Self> {
-        let this = Self::alloc().set_ivars(Mutex::new(TapState {
-            input: None,
-            muted: false,
-        }));
-        unsafe { msg_send![super(this), init] }
-    }
-    pub fn set_muted(&self, muted: bool) {
-        self.ivars().lock().unwrap().muted = muted;
-    }
-    pub fn set_input(&self, input: Option<Arc<Input>>) {
-        self.ivars().lock().unwrap().input = input;
-    }
-}
-
-define_class!(
-    /// A participants' track into the recording.
-    // SAFETY: NSObject has no subclassing requirements; the input is thread-safe.
-    #[unsafe(super(NSObject))]
-    #[name = "OxideRemoteAudioTap"]
-    #[ivars = Arc<Input>]
-    pub struct RemoteAudioTap;
-
-    impl RemoteAudioTap {
-        #[unsafe(method(renderPCMBuffer:))]
-        fn render(&self, buffer: *mut AnyObject) {
-            if let Some(buffer) = unsafe { buffer.as_ref() } {
-                self.ivars().append_pcm(buffer);
-            }
-        }
-    }
-);
-
-impl RemoteAudioTap {
-    pub fn new(input: Arc<Input>) -> Retained<Self> {
-        let this = Self::alloc().set_ivars(input);
-        unsafe { msg_send![super(this), init] }
-    }
+/// Interleaved 16-bit frames mixed down to mono floats in -1…1.
+fn to_mono(samples: &[i16], channels: usize) -> Vec<f32> {
+    let scale = 1. / (32_768. * channels as f32);
+    samples
+        .chunks_exact(channels)
+        .map(|frame| frame.iter().map(|s| f32::from(*s)).sum::<f32>() * scale)
+        .collect()
 }
 
 #[cfg(test)]
@@ -578,15 +530,21 @@ mod tests {
         std::fs::write(&first, b"x").unwrap();
         let second = default_path("Daily: team/sync", &dir).unwrap();
         assert_ne!(first, second);
-        assert!(second.to_string_lossy().ends_with(" 2.m4a"));
+        assert!(second.to_string_lossy().ends_with(&format!(" 2.{EXTENSION}")));
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn records_two_inputs_into_an_m4a() {
+    fn mono_mixes_interleaved_channels() {
+        assert_eq!(to_mono(&[16_384, -16_384, 8_192, 8_192], 2), vec![0., 0.25]);
+        assert_eq!(to_mono(&[-32_768], 1), vec![-1.]);
+    }
+
+    #[test]
+    fn records_two_inputs_into_a_file() {
         let dir = std::env::temp_dir().join(format!("oxide-rec-file-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.m4a");
+        let path = dir.join(format!("test.{EXTENSION}"));
         let clock = Arc::new(Mutex::new(0f64));
         let read = clock.clone();
         let recorder =

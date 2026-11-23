@@ -30,10 +30,13 @@ pub fn ensure_devices(this: &mut Oxide) {
     }
     ui.devices_loaded = true;
     ui.devices.refresh();
-    let tx = ui.media.tx.clone();
-    crate::media_devices::core_audio::observe(move || {
-        let _ = tx.unbounded_send(crate::media_engine::MediaMsg::Devices);
-    });
+    #[cfg(target_os = "macos")]
+    {
+        let tx = ui.media.tx.clone();
+        crate::media_devices::core_audio::observe(move || {
+            let _ = tx.unbounded_send(crate::media_engine::MediaMsg::Devices);
+        });
+    }
 }
 
 fn chosen(this: &Oxide, kind: DeviceKind) -> String {

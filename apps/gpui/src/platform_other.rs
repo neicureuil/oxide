@@ -37,6 +37,11 @@ pub fn request_permission() {}
 /// Opens the notification settings: none of the app's own on this platform.
 pub fn open_notification_settings() {}
 
+/// Banners aren't shown off macOS: the app counts as in front.
+pub fn is_active() -> bool {
+    true
+}
+
 pub fn request_attention(_critical: bool) -> Option<isize> {
     None
 }

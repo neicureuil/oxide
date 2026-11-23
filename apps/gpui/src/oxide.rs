@@ -694,6 +694,7 @@ pub fn initials(name: &str) -> SharedString {
 
 impl Render for Oxide {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::media_video::sweep(window);
         shell::root(self, window, cx)
     }
 }

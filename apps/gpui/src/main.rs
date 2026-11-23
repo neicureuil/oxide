@@ -11,32 +11,14 @@ mod calendar_details;
 mod calendar_editor;
 mod calendar_model;
 mod calendar_parts;
-#[cfg(target_os = "macos")]
-mod call_window;
-// Calls need LiveKit's macOS build: elsewhere a stand-in says they are not available.
-#[cfg(not(target_os = "macos"))]
-#[path = "call_unavailable.rs"]
-mod call_window;
-#[cfg(not(target_os = "macos"))]
-mod call_devices {
-    pub use crate::call_window::device_settings;
-}
-#[cfg(not(target_os = "macos"))]
-mod call_panel {
-    pub use crate::call_window::panel;
-}
-#[cfg(target_os = "macos")]
 mod call_alert;
-#[cfg(target_os = "macos")]
 mod call_devices;
-#[cfg(target_os = "macos")]
 mod call_panel;
 mod call_prefs;
 mod call_report;
-#[cfg(target_os = "macos")]
 mod call_share_picker;
-#[cfg(target_os = "macos")]
 mod call_stage;
+mod call_window;
 mod calls_screen;
 mod chat_admin;
 mod chats_parts;
@@ -62,23 +44,18 @@ mod input;
 #[cfg(windows)]
 mod login_native;
 mod login_window;
-#[cfg(target_os = "macos")]
 mod media_devices;
-#[cfg(target_os = "macos")]
 mod media_engine;
-#[cfg(target_os = "macos")]
-mod media_objc;
-#[cfg(target_os = "macos")]
 mod media_recorder;
-#[cfg(target_os = "macos")]
+// AVFoundation's microphone test and camera preview; a stand-in elsewhere.
+#[cfg_attr(not(target_os = "macos"), path = "media_tester_other.rs")]
 mod media_tester;
-#[cfg(target_os = "macos")]
 mod media_video;
-#[cfg(target_os = "macos")]
-mod media_webrtc;
 mod members;
 mod motion;
 mod new_chat;
+#[cfg(target_os = "macos")]
+mod objc_util;
 mod oxide;
 mod paths;
 #[cfg_attr(not(target_os = "macos"), path = "platform_other.rs")]

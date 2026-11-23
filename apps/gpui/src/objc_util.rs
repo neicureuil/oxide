@@ -1,23 +1,12 @@
-//! Small helpers to call LiveKitWebRTC, AVFoundation and Foundation through the Objective-C runtime.
-//! Objects are handled as `AnyObject`: the media code mirrors the Swift engine call for call, without bindings.
+//! Small helpers to call AppKit, AVFoundation and Foundation through the Objective-C runtime (macOS only).
+//! Objects are handled as `AnyObject`: the code mirrors the Swift app call for call, without bindings.
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject};
-use objc2::{Encode, Encoding, msg_send};
+use objc2::{Encoding, msg_send};
 use objc2_foundation::NSString;
 use std::ffi::CStr;
 
 pub type Obj = Retained<AnyObject>;
-
-/// `CGSize`, as libwebrtc's renderers and AppKit take it.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct CGSize {
-    pub width: f64,
-    pub height: f64,
-}
-unsafe impl Encode for CGSize {
-    const ENCODING: Encoding = Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING]);
-}
 
 /// Opaque C types that Objective-C methods take or return by pointer, named as their type encodings name them.
 macro_rules! opaque {
@@ -33,7 +22,6 @@ macro_rules! opaque {
 }
 opaque!(
     CVBuffer = "__CVBuffer",
-    CMFormatDescription = "opaqueCMFormatDescription",
     CMSampleBuffer = "opaqueCMSampleBuffer",
     AudioUnit = "ComponentInstanceRecord",
 );
@@ -41,11 +29,6 @@ opaque!(
 /// A class by runtime name; `None` when its framework is not loaded.
 pub fn class(name: &CStr) -> Option<&'static AnyClass> {
     AnyClass::get(name)
-}
-
-/// LiveKitWebRTC was found at launch (it is linked weakly).
-pub fn available() -> bool {
-    class(c"LKRTCPeerConnectionFactory").is_some()
 }
 
 pub fn alloc(name: &CStr) -> Option<Allocated<AnyObject>> {
@@ -91,12 +74,6 @@ pub fn nsarray(items: &[&AnyObject]) -> Obj {
     unsafe { msg_send![cls, arrayWithObjects: pointers.as_ptr(), count: pointers.len()] }
 }
 
-pub fn nsarray_of_strings(items: &[String]) -> Obj {
-    let strings: Vec<Retained<NSString>> = items.iter().map(|s| ns(s)).collect();
-    let refs: Vec<&AnyObject> = strings.iter().map(|s| -> &AnyObject { s }).collect();
-    nsarray(&refs)
-}
-
 /// `[NSNumber numberWithDouble:]`.
 pub fn number(value: f64) -> Obj {
     let cls = class(c"NSNumber").expect("Foundation");
@@ -119,17 +96,6 @@ pub fn get(dict: &AnyObject, key: &str) -> Option<Obj> {
     unsafe { msg_send![dict, objectForKey: &*key] }
 }
 
-/// Whether `obj` is an instance of the named class (or a subclass).
-pub fn is_kind(obj: &AnyObject, name: &CStr) -> bool {
-    let Some(cls) = class(name) else { return false };
-    unsafe { msg_send![obj, isKindOfClass: cls] }
-}
-
-/// Same object.
-pub fn same(a: &AnyObject, b: &AnyObject) -> bool {
-    std::ptr::eq(a, b)
-}
-
 /// `localizedDescription` of an `NSError`.
 pub fn error_text(error: *mut AnyObject) -> String {
     let Some(error) = (unsafe { error.as_ref() }) else {
@@ -139,7 +105,7 @@ pub fn error_text(error: *mut AnyObject) -> String {
     string(text.as_deref())
 }
 
-/// A C function of the (weakly linked) framework, looked up at run time.
+/// A C symbol of a loaded system framework, looked up at run time.
 pub fn symbol(name: &CStr) -> Option<*mut std::ffi::c_void> {
     unsafe extern "C" {
         fn dlsym(
@@ -150,25 +116,4 @@ pub fn symbol(name: &CStr) -> Option<*mut std::ffi::c_void> {
     // RTLD_DEFAULT
     let pointer = unsafe { dlsym(-2isize as *mut std::ffi::c_void, name.as_ptr()) };
     (!pointer.is_null()).then_some(pointer)
-}
-
-/// Appends a line to `~/Library/Logs/Oxide/calling.log`, like the macOS app's `callTrace`.
-pub fn trace(message: &str) {
-    use std::io::Write;
-    let Some(home) = std::env::var_os("HOME") else {
-        return;
-    };
-    let dir = std::path::Path::new(&home).join("Library/Logs/Oxide");
-    let _ = std::fs::create_dir_all(&dir);
-    let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("calling.log"))
-    else {
-        return;
-    };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let _ = writeln!(file, "{now} media {message}");
 }

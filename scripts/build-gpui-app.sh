@@ -28,30 +28,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/oxide-gpui"
 cp apps/macos/Resources/AppIcon.icns "$APP/Contents/Resources/"
 
-# Dynamic frameworks the binary loads through @rpath (LiveKitWebRTC, linked weakly by apps/gpui/build.rs
-# when present): embed them, from OXIDE_WEBRTC_FRAMEWORKS or the Swift package's artifacts, as build.rs finds them.
-FRAMEWORKS=$(otool -L "$BIN" | sed -n 's|^[[:space:]]*@rpath/\([^/]*\.framework\)/.*|\1|p' | sort -u)
-for FRAMEWORK in $FRAMEWORKS; do
-    FOUND=""
-    if [ -n "${OXIDE_WEBRTC_FRAMEWORKS:-}" ] && [ -d "$OXIDE_WEBRTC_FRAMEWORKS/$FRAMEWORK" ]; then
-        FOUND="$OXIDE_WEBRTC_FRAMEWORKS/$FRAMEWORK"
-    fi
-    [ -n "$FOUND" ] || FOUND="$(find apps/macos/.build/artifacts -maxdepth 6 -type d -name "$FRAMEWORK" \
-        -path "*macos-arm64_x86_64*" 2>/dev/null | head -1)"
-    if [ -z "$FOUND" ]; then
-        echo "Introuvable : $FRAMEWORK, requis par oxide-gpui (swift build dans apps/macos, ou OXIDE_WEBRTC_FRAMEWORKS)." >&2
-        exit 1
-    fi
-    mkdir -p "$APP/Contents/Frameworks"
-    cp -R "$FOUND" "$APP/Contents/Frameworks/"
-done
-# Only the bundle's own Frameworks folder: build.rs also points at the build machine's copy.
-for RPATH in $(otool -l "$APP/Contents/MacOS/oxide-gpui" | sed -n 's|^ *path \(/[^ ]*\) (offset.*|\1|p'); do
-    install_name_tool -delete_rpath "$RPATH" "$APP/Contents/MacOS/oxide-gpui"
-done
-if [ -n "$FRAMEWORKS" ] && ! otool -l "$APP/Contents/MacOS/oxide-gpui" | grep -q "@executable_path/../Frameworks"; then
-    install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/oxide-gpui"
-fi
+# libwebrtc is linked in statically (teams-media): no framework to embed.
 
 # The version lives in Cargo.toml's [workspace.package]; the build number counts commits (override with BUILD_NUMBER).
 VERSION="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
@@ -106,11 +83,6 @@ ENTITLEMENTS="apps/macos/Oxide.entitlements"
 IDENTITY="${SIGN_IDENTITY:--}"
 if [ "$IDENTITY" = - ]; then
     echo "Signature ad hoc : le Trousseau redemandera après chaque build (SIGN_IDENTITY=\"…\" pour un certificat)." >&2
-fi
-if [ -d "$APP/Contents/Frameworks" ]; then
-    for FRAMEWORK in "$APP"/Contents/Frameworks/*.framework; do
-        codesign --force --sign "$IDENTITY" "$FRAMEWORK" >/dev/null
-    done
 fi
 codesign --force --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP" >/dev/null
 echo "$APP ($VERSION, build $BUILD)"
