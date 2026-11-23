@@ -4,13 +4,12 @@
 use crate::oxide::{Oxide, tr};
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedSender, unbounded};
-use gpui::{
-    AppContext, Bounds, Context, Render, Task, Window, WindowBounds, WindowHandle, WindowOptions, div,
-    prelude::*, px, size,
-};
+use gpui::{Context, Render, Task, Window, div, prelude::*};
+#[cfg(not(windows))]
+use gpui::{AppContext, Bounds, WindowBounds, WindowHandle, WindowOptions, px, size};
 use std::time::Duration;
 use teams_core::Action;
-use wry::{Rect, WebView, WebViewBuilder, dpi};
+use wry::{Rect, WebContext, WebView, WebViewBuilder, dpi};
 
 /// A silent sign-in is a few redirects; past this, Microsoft is waiting for a person.
 const SILENT_LIMIT: Duration = Duration::from_secs(30);
@@ -30,9 +29,15 @@ enum Event {
     Closed,
 }
 
+/// The open sign-in window: a GPUI window on macOS and Linux, a Win32 one on Windows (`login_native`).
+#[cfg(not(windows))]
+type Handle = WindowHandle<LoginView>;
+#[cfg(windows)]
+type Handle = crate::login_native::LoginWindow;
+
 pub struct Ui {
     events: UnboundedSender<Event>,
-    window: Option<WindowHandle<LoginView>>,
+    window: Option<Handle>,
     /// The return URL was reached or the core closed the window: closing it is not a cancellation.
     returned: bool,
     silent: Option<(WebView, Task<()>)>,
@@ -102,9 +107,28 @@ fn navigation(events: UnboundedSender<Event>, silent: bool) -> impl Fn(String) -
     }
 }
 
+/// The sign-in's own browsing data. On Windows a folder of the app's (WebView2 would otherwise make one
+/// next to the executable); macOS uses the store identifier instead.
+fn context() -> WebContext {
+    #[cfg(windows)]
+    let folder = std::env::var_os("LOCALAPPDATA").map(|local| {
+        std::path::PathBuf::from(local)
+            .join("oxide-gpui")
+            .join("WebView2")
+    });
+    #[cfg(not(windows))]
+    let folder = None;
+    WebContext::new(folder)
+}
+
 /// A builder on the sign-in's own cookie store.
-fn builder<'a>(url: &str, events: UnboundedSender<Event>, silent: bool) -> WebViewBuilder<'a> {
-    let builder = WebViewBuilder::new()
+fn builder<'a>(
+    context: &'a mut WebContext,
+    url: &str,
+    events: UnboundedSender<Event>,
+    silent: bool,
+) -> WebViewBuilder<'a> {
+    let builder = WebViewBuilder::new_with_web_context(context)
         .with_url(url)
         .with_navigation_handler(navigation(events, silent));
     #[cfg(target_os = "macos")]
@@ -120,21 +144,49 @@ pub fn open(this: &mut Oxide, url: String, cx: &mut Context<Oxide>) {
     close(this, cx);
     this.ui.login.returned = false;
     let events = this.ui.login.events.clone();
-    let bounds = Bounds::centered(None, size(px(540.), px(740.)), cx);
-    let opened = cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(gpui::TitlebarOptions {
-                title: Some(tr("ui.login_window.microsoft_sign_in_oxide").into()),
+    let title = tr("ui.login_window.microsoft_sign_in_oxide");
+    #[cfg(windows)]
+    {
+        let closed = events.clone();
+        let opened = crate::login_native::LoginWindow::open(
+            &title,
+            540.,
+            740.,
+            |parent| {
+                builder(&mut context(), &url, events, false)
+                    .with_focused(true)
+                    .build(parent)
+            },
+            move || {
+                let _ = closed.unbounded_send(Event::Closed);
+            },
+        );
+        match opened {
+            Ok(window) => this.ui.login.window = Some(window),
+            Err(error) => {
+                eprintln!("oxide: the sign-in window could not be opened: {error}");
+                this.send(Action::LoginCancelled);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let bounds = Bounds::centered(None, size(px(540.), px(740.)), cx);
+        let opened = cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(gpui::TitlebarOptions {
+                    title: Some(title.into()),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        },
-        move |window, cx| cx.new(|_| LoginView::new(window, &url, events)),
-    );
-    match opened {
-        Ok(handle) => this.ui.login.window = Some(handle),
-        Err(_) => this.send(Action::LoginCancelled),
+            },
+            move |window, cx| cx.new(|_| LoginView::new(window, &url, events)),
+        );
+        match opened {
+            Ok(handle) => this.ui.login.window = Some(handle),
+            Err(_) => this.send(Action::LoginCancelled),
+        }
     }
 }
 
@@ -142,7 +194,11 @@ pub fn open(this: &mut Oxide, url: String, cx: &mut Context<Oxide>) {
 pub fn close(this: &mut Oxide, cx: &mut Context<Oxide>) {
     if let Some(handle) = this.ui.login.window.take() {
         this.ui.login.returned = true;
+        // Dropping the Win32 window closes it.
+        #[cfg(not(windows))]
         let _ = handle.update(cx, |_, window, _| window.remove_window());
+        #[cfg(windows)]
+        let _ = (handle, &cx);
     }
 }
 
@@ -151,7 +207,7 @@ pub fn close(this: &mut Oxide, cx: &mut Context<Oxide>) {
 pub fn silent(this: &mut Oxide, url: String, window: &mut Window, cx: &mut Context<Oxide>) {
     end_silent(this);
     let events = this.ui.login.events.clone();
-    let built = builder(&url, events.clone(), true)
+    let built = builder(&mut context(), &url, events.clone(), true)
         .with_visible(false)
         .with_bounds(Rect {
             position: dpi::LogicalPosition::new(0., 0.).into(),
@@ -173,10 +229,15 @@ pub fn silent(this: &mut Oxide, url: String, window: &mut Window, cx: &mut Conte
 pub fn forget(this: &mut Oxide, window: &mut Window) {
     end_silent(this);
     // Clearing goes through a view on the sign-in's store; a short-lived hidden one does it.
-    let cleared = builder("about:blank", this.ui.login.events.clone(), false)
-        .with_visible(false)
-        .build_as_child(&*window)
-        .and_then(|view| view.clear_all_browsing_data());
+    let cleared = builder(
+        &mut context(),
+        "about:blank",
+        this.ui.login.events.clone(),
+        false,
+    )
+    .with_visible(false)
+    .build_as_child(&*window)
+    .and_then(|view| view.clear_all_browsing_data());
     if let Err(error) = cleared {
         eprintln!("oxide: could not clear the sign-in cookies: {error}");
     }
@@ -196,7 +257,7 @@ pub struct LoginView {
 
 impl LoginView {
     fn new(window: &mut Window, url: &str, events: UnboundedSender<Event>) -> Self {
-        let web = builder(url, events.clone(), false)
+        let web = builder(&mut context(), url, events.clone(), false)
             .with_focused(true)
             .build_as_child(&*window)
             .map_err(|error| eprintln!("oxide: the sign-in view could not be created: {error}"))
@@ -218,8 +279,11 @@ impl Render for LoginView {
             self.size = Some(viewport);
             let _ = web.set_bounds(Rect {
                 position: dpi::LogicalPosition::new(0., 0.).into(),
-                size: dpi::LogicalSize::new(f64::from(f32::from(viewport.width)), f64::from(f32::from(viewport.height)))
-                    .into(),
+                size: dpi::LogicalSize::new(
+                    f64::from(f32::from(viewport.width)),
+                    f64::from(f32::from(viewport.height)),
+                )
+                .into(),
             });
         }
         div().size_full().bg(gpui::white())
@@ -236,16 +300,29 @@ impl Drop for LoginView {
 
 /// `OXIDE_SCRIPT` steps: `login:open:<url>` shows the sign-in window there; `login:return` sends it to the
 /// Teams return URL, which must be stopped, reported and close the window.
-pub fn debug_step(this: &mut Oxide, step: &str, _window: &mut Window, cx: &mut Context<Oxide>) -> bool {
+pub fn debug_step(
+    this: &mut Oxide,
+    step: &str,
+    _window: &mut Window,
+    cx: &mut Context<Oxide>,
+) -> bool {
     if let Some(url) = step.strip_prefix("login:open:") {
         open(this, url.to_owned(), cx);
         return true;
     }
     if step == "login:return" {
-        let Some(handle) = this.ui.login.window else { return false };
+        const RETURN: &str = "https://teams.microsoft.com/v2#code=oxide-test&state=x";
+        let Some(handle) = &this.ui.login.window else {
+            return false;
+        };
+        #[cfg(windows)]
+        handle.with_web(|web| {
+            let _ = web.load_url(RETURN);
+        });
+        #[cfg(not(windows))]
         let _ = handle.update(cx, |view, _, _| {
             if let Some(web) = &view.web {
-                let _ = web.load_url("https://teams.microsoft.com/v2#code=oxide-test&state=x");
+                let _ = web.load_url(RETURN);
             }
         });
         return true;

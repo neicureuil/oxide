@@ -59,6 +59,8 @@ mod files_parts;
 mod icons;
 mod image_viewer;
 mod input;
+#[cfg(windows)]
+mod login_native;
 mod login_window;
 #[cfg(target_os = "macos")]
 mod media_devices;
