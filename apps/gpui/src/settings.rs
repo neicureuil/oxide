@@ -175,8 +175,9 @@ pub fn screen(this: &mut Oxide, window: &mut Window, cx: &mut Context<Oxide>) ->
             subpage(this, tr("ui.screens.message_refresh"), vec![body], cx)
         }
         Some(Page::Appearance) => {
-            let body = appearance_section(this, cx);
-            subpage(this, tr("ui.screens.appearance"), vec![body], cx)
+            let mut sections = vec![appearance_section(this, cx)];
+            sections.extend(crate::rendering::section(this, cx));
+            subpage(this, tr("ui.screens.appearance"), sections, cx)
         }
         Some(Page::Language) => {
             let sections = vec![language_section(this, cx), spelling_section(this, cx)];

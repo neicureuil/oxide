@@ -50,5 +50,14 @@ core-foundation = "0.10"
 # The core's in-process fake services, behind `--demo`.
 demo = ["teams-core/demo"]
 
+[target.'cfg(windows)'.dependencies]
+# Banners (WinRT toasts) and the identity they show, with the versions gpui already uses.
+windows = { version = "0.61", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading"] }
+windows-registry = "0.5"
+
+[build-dependencies]
+# The Windows icon (resources/oxide.rc), compiled into the exe.
+embed-resource = "3"
+
 [dev-dependencies]
 gpui = { version = "0.2.2", features = ["runtime_shaders", "test-support"] }

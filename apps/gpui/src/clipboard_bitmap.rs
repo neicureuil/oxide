@@ -20,10 +20,14 @@ const CF_DIB: u32 = 8;
 /// The clipboard's bitmap as PNG, if there is one.
 pub fn read_png() -> Option<gpui::Image> {
     let dib = read_dib()?;
-    let image = image::load_from_memory_with_format(&bmp_file(&dib)?, image::ImageFormat::Bmp).ok()?;
+    let image =
+        image::load_from_memory_with_format(&bmp_file(&dib)?, image::ImageFormat::Bmp).ok()?;
     let mut png = std::io::Cursor::new(Vec::new());
     image.write_to(&mut png, image::ImageFormat::Png).ok()?;
-    Some(gpui::Image::from_bytes(gpui::ImageFormat::Png, png.into_inner()))
+    Some(gpui::Image::from_bytes(
+        gpui::ImageFormat::Png,
+        png.into_inner(),
+    ))
 }
 
 fn read_dib() -> Option<Vec<u8>> {
@@ -61,7 +65,11 @@ fn bmp_file(dib: &[u8]) -> Option<Vec<u8>> {
         used * 4
     };
     // BI_BITFIELDS with the old 40-byte header: the three masks follow it.
-    let masks = if header == 40 && compression == 3 { 12 } else { 0 };
+    let masks = if header == 40 && compression == 3 {
+        12
+    } else {
+        0
+    };
     let offset = 14 + header + masks + palette;
     let size = 14 + dib.len();
     let mut file = Vec::with_capacity(size);

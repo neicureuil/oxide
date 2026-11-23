@@ -57,6 +57,16 @@ thread_local! {
     /// Width of each feed (main list, reply pane) at its last layout, and the feed whose rows are being drawn.
     static WIDTHS: RefCell<HashMap<&'static str, f32>> = RefCell::default();
     static DRAWING: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+    /// Inner width of the chat bubble being drawn, which caps its pictures and cards too.
+    static BUBBLE: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+}
+
+/// Draws a bubble's content with its pictures and cards held to `width`, the bubble's inside.
+pub fn in_bubble<T>(width: f32, draw: impl FnOnce() -> T) -> T {
+    let outer = BUBBLE.with(|b| b.replace(Some(width)));
+    let drawn = draw();
+    BUBBLE.with(|b| b.set(outer));
+    drawn
 }
 
 /// Room around a message's content in a row: padding, avatar and gap, the bubble's own padding and the
@@ -80,7 +90,8 @@ pub fn set_feed_width(id: &'static str, width: f32) -> bool {
 /// message wider than its column, as the bubble takes its content's width.
 pub fn content_limit() -> f32 {
     let width = DRAWING.with(|d| d.get()).and_then(|id| WIDTHS.with(|w| w.borrow().get(id).copied()));
-    width.map_or(f32::MAX, |w| (w - ROW_CHROME).max(120.))
+    let feed = width.map_or(f32::MAX, |w| (w - ROW_CHROME).max(120.));
+    BUBBLE.with(|b| b.get()).map_or(feed, |bubble| feed.min(bubble))
 }
 
 /// True for a message that arrived in the last moment, while its row may still be fading in.

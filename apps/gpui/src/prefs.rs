@@ -39,6 +39,10 @@ pub struct Prefs {
     pub spelling: bool,
     /// The calendar's view: "agenda", "day", "week" or "month".
     pub calendar_mode: String,
+    /// Linux: draw with the CPU (Mesa's lavapipe) instead of the GPU, from the next launch (`rendering.rs`).
+    pub software_rendering: bool,
+    /// Windows: present without DirectComposition, from the next launch (`rendering.rs`).
+    pub no_direct_composition: bool,
 }
 
 fn path() -> Option<PathBuf> {

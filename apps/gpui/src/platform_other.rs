@@ -1,6 +1,6 @@
-//! System services outside the window on Windows and Linux. The macOS ones (`platform.rs`: Dock badge,
-//! banners, Quick Look, voicemail playback, network path) are not ported yet: these keep the app running
-//! without them, and open downloaded files with the system's default app.
+//! System services outside the window on Windows and Linux. Windows shows banners (`notifications_windows.rs`);
+//! the other macOS ones (`platform.rs`: Dock badge, Quick Look, voicemail playback, network path) are not ported
+//! yet: these keep the app running without them, and open downloaded files with the system's default app.
 use crate::oxide::Oxide;
 use gpui::{Context, Window};
 use teams_core::NotificationSound;
@@ -17,18 +17,58 @@ pub struct Banner {
     pub can_reply: bool,
 }
 
-/// Nothing to wire yet: the app counts itself online and shows no banners.
-pub fn start(_window: &mut Window, _cx: &mut Context<Oxide>) {}
+/// Windows: banners, whose clicks come back here. Linux: nothing yet, the app counts itself online.
+pub fn start(_window: &mut Window, cx: &mut Context<Oxide>) {
+    #[cfg(windows)]
+    {
+        use futures::StreamExt;
+        let (clicks, mut received) = futures::channel::mpsc::unbounded();
+        crate::notifications_windows::start(clicks);
+        cx.spawn(async move |this, cx| {
+            while let Some(click) = received.next().await {
+                if this
+                    .update(cx, |this, cx| crate::notifications_windows::handle(this, click, cx))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+    #[cfg(not(windows))]
+    let _ = cx;
+}
 
 pub fn dock_badge(_unread: Option<(u32, u32)>) {}
 
-pub fn notify(_banner: Banner) {}
+pub fn notify(banner: Banner) {
+    #[cfg(windows)]
+    crate::notifications_windows::notify(&banner);
+    #[cfg(not(windows))]
+    let _ = banner;
+}
 
-pub fn withdraw(_conversation_id: &str) {}
+pub fn withdraw(conversation_id: &str) {
+    #[cfg(windows)]
+    crate::notifications_windows::withdraw(conversation_id);
+    #[cfg(not(windows))]
+    let _ = conversation_id;
+}
 
-pub fn notify_call(_id: &str, _title: &str, _video: bool) {}
+pub fn notify_call(id: &str, title: &str, video: bool) {
+    #[cfg(windows)]
+    crate::notifications_windows::notify_call(id, title, video);
+    #[cfg(not(windows))]
+    let _ = (id, title, video);
+}
 
-pub fn withdraw_call(_id: &str) {}
+pub fn withdraw_call(id: &str) {
+    #[cfg(windows)]
+    crate::notifications_windows::withdraw_call(id);
+    #[cfg(not(windows))]
+    let _ = id;
+}
 
 pub fn refresh_permission() {}
 
@@ -37,8 +77,11 @@ pub fn request_permission() {}
 /// Opens the notification settings: none of the app's own on this platform.
 pub fn open_notification_settings() {}
 
-/// Banners aren't shown off macOS: the app counts as in front.
+/// Our window is in front (Linux, without banners, counts itself in front).
 pub fn is_active() -> bool {
+    #[cfg(windows)]
+    return crate::notifications_windows::is_active();
+    #[cfg(not(windows))]
     true
 }
 

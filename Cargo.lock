@@ -5330,6 +5330,7 @@ dependencies = [
  "core-foundation 0.10.0",
  "core-video",
  "dispatch2",
+ "embed-resource",
  "futures",
  "gpui",
  "image",
@@ -5348,6 +5349,8 @@ dependencies = [
  "teams-core",
  "teams-media",
  "unicode-segmentation",
+ "windows 0.61.3",
+ "windows-registry 0.5.3",
  "wry",
 ]
 

@@ -56,6 +56,8 @@ mod media_video;
 mod members;
 mod motion;
 mod new_chat;
+#[cfg(windows)]
+mod notifications_windows;
 #[cfg(target_os = "macos")]
 mod objc_util;
 mod oxide;
@@ -73,6 +75,7 @@ mod platform_network;
 #[cfg(target_os = "macos")]
 mod platform_notifications;
 mod prefs;
+mod rendering;
 mod screens;
 mod search;
 mod settings;
@@ -111,6 +114,8 @@ fn main() {
         teams_core::set_cache_directory(caches.to_string_lossy().into_owned());
     }
 
+    // GPUI reads its device choice from the environment once, when it starts.
+    rendering::apply(&prefs::Prefs::load());
     Application::new().with_assets(icons::Assets).run(move |cx: &mut App| {
         cx.text_system()
             .add_fonts(vec![

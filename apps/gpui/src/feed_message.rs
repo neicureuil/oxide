@@ -255,12 +255,16 @@ fn bubble_card(
 ) -> AnyElement {
     let theme = this.theme;
     let (big, small) = (px(12.), px(4.));
+    let bubble_width: f32 = if msg.mine { 560. } else { 600. };
+    // Pictures and cards inside fit the bubble, not only the feed: wider, they ran out of its side.
+    let inside = bubble_width - 2. * BUBBLE_PADDING - if msg.mine { 0. } else { 2. };
+    let body = crate::feed::in_bubble(inside, || content(this, msg, true, window, cx));
     div()
         .min_w_0()
         // Also on the bubble itself, not only its column: the list measures text against the widest it may be,
         // and a long paragraph measured wider than it's drawn overlapped the rows below.
-        .max_w(px(if msg.mine { 560. } else { 600. }))
-        .px(px(14.))
+        .max_w(px(bubble_width))
+        .px(px(BUBBLE_PADDING))
         .py(px(10.))
         .bg(if msg.mine {
             theme.mine_bubble
@@ -274,9 +278,12 @@ fn bubble_card(
         .rounded_br(big)
         .rounded_tl(if msg.mine { big } else { small })
         .rounded_tr(if msg.mine { small } else { big })
-        .child(content(this, msg, true, window, cx))
+        .child(body)
         .into_any_element()
 }
+
+/// Space between a bubble's edge and its content.
+const BUBBLE_PADDING: f32 = 14.;
 
 /// « **Name** · 20:12 » (only the time on my bubbles), with the actions beside it so showing them never moves the feed.
 fn meta(

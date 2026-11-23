@@ -5051,6 +5051,34 @@
     "fr": "Statut inconnu",
     "en": "Status unknown"
   },
+  "ui.rendering.direct_composition": {
+    "fr": "Utiliser DirectComposition",
+    "en": "Use DirectComposition"
+  },
+  "ui.rendering.direct_composition_detail": {
+    "fr": "Windows compose la fenêtre de l’app. Désactivé, l’app présente ses images directement dans sa fenêtre : à essayer si l’affichage ou la mémoire posent problème.",
+    "en": "Windows composes the app's window. Turned off, the app presents its frames straight into its window: worth trying if drawing or memory misbehaves."
+  },
+  "ui.rendering.restart": {
+    "fr": "Redémarrez Oxide pour appliquer ce réglage.",
+    "en": "Restart Oxide to apply this setting."
+  },
+  "ui.rendering.software": {
+    "fr": "Rendu logiciel (processeur)",
+    "en": "Software rendering (CPU)"
+  },
+  "ui.rendering.software_detail": {
+    "fr": "Dessine l’interface avec le processeur (lavapipe de Mesa) au lieu de la carte graphique. Plus lent, mais contourne un pilote graphique défaillant.",
+    "en": "Draws the interface with the processor (Mesa's lavapipe) instead of the graphics card. Slower, but works around a faulty graphics driver."
+  },
+  "ui.rendering.software_unavailable": {
+    "fr": "Indisponible : le pilote Vulkan lavapipe de Mesa n’est pas installé (paquet mesa-vulkan-drivers).",
+    "en": "Unavailable: Mesa's lavapipe Vulkan driver isn't installed (package mesa-vulkan-drivers)."
+  },
+  "ui.rendering.title": {
+    "fr": "Rendu",
+    "en": "Rendering"
+  },
   "ui.refresh_settings.constant_refresh": {
     "fr": "Actualisation permanente",
     "en": "Constant refresh"

@@ -14,6 +14,7 @@ use gpui::{
     prelude::*, px,
 };
 use std::ops::Range;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use teams_core::{Action, ComposerView, FileAction, Importance, LinkPreviewAction};
 
@@ -51,6 +52,10 @@ pub struct Ui {
     pub apps: composer_extensions::Flyout,
     pub toolbar: composer_toolbar::Toolbar,
     pub thumbs: composer_thumbs::Thumbs,
+    /// Small previews of the images pasted in the draft, by attachment id (and whether the core's view has
+    /// listed it yet), and the window drawing them.
+    pasted: Vec<(String, Arc<gpui::RenderImage>, bool)>,
+    pasted_window: Option<gpui::WindowId>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -104,6 +109,8 @@ impl Ui {
             apps: composer_extensions::Flyout::new(window, cx),
             toolbar: composer_toolbar::Toolbar::new(window, cx),
             thumbs: composer_thumbs::Thumbs::default(),
+            pasted: Vec::new(),
+            pasted_window: None,
             _subscriptions: subscriptions,
         }
     }
@@ -331,6 +338,9 @@ fn paste_image(
     // Sizes in points, so a Retina screenshot shows at the size it had on screen.
     let scale = window.scale_factor().max(1.);
     let id = paste_id();
+    if let Some(preview) = pasted_preview(&png) {
+        this.ui.composer.pasted.push((id.clone(), preview, false));
+    }
     this.send(Action::Files {
         action: FileAction::PasteImage {
             id: id.clone(),
@@ -345,6 +355,64 @@ fn paste_image(
         style.link = None;
         input.insert_styled(&IMAGE_CHARACTER.to_string(), style, window, cx);
     });
+}
+
+/// Height of a pasted image's preview above the text.
+const PASTED_HEIGHT: f32 = 72.;
+
+/// A pasted image scaled down for its preview (twice the shown height, for sharp screens), as the BGRA GPUI draws.
+fn pasted_preview(png: &[u8]) -> Option<Arc<gpui::RenderImage>> {
+    let image = image::load_from_memory_with_format(png, image::ImageFormat::Png).ok()?;
+    let side = (PASTED_HEIGHT * 2.) as u32;
+    let mut small = image.thumbnail(side * 3, side).into_rgba8();
+    for pixel in small.pixels_mut() {
+        pixel.0.swap(0, 2);
+    }
+    Some(Arc::new(gpui::RenderImage::new(vec![image::Frame::new(small)])))
+}
+
+/// The images pasted in the draft, in a row above the text: the editor shows each as a placeholder character.
+fn pasted_strip(
+    this: &mut Oxide,
+    view: &ComposerView,
+    window: &mut Window,
+) -> Option<AnyElement> {
+    let ui = &mut this.ui.composer;
+    // Forget the previews of images taken out of the draft (or sent), and free them from the window's atlas.
+    let window_id = window.window_handle().window_id();
+    for (id, image, seen) in std::mem::take(&mut ui.pasted) {
+        let listed = view.attachments.iter().any(|a| a.inline && a.id == id);
+        // Not listed yet right after the paste: the core adds it on its next update.
+        if listed || !seen {
+            ui.pasted.push((id, image, seen || listed));
+        } else if let Some(drawn_in) = ui.pasted_window {
+            crate::media_video::retire(drawn_in, image);
+        }
+    }
+    if ui.pasted.is_empty() {
+        return None;
+    }
+    ui.pasted_window = Some(window_id);
+    let theme = this.theme;
+    let tiles = view.attachments.iter().filter(|a| a.inline && a.error.is_none()).filter_map(|a| {
+        let image = ui.pasted.iter().find(|(id, _, _)| *id == a.id)?.1.clone();
+        let size = image.size(0);
+        let (w, h) = (size.width.0 as f32, size.height.0 as f32);
+        let width = if h > 0. { PASTED_HEIGHT * w / h } else { PASTED_HEIGHT };
+        Some(
+            div()
+                .h(px(PASTED_HEIGHT))
+                .w(px(width))
+                .rounded(px(6.))
+                .overflow_hidden()
+                .border_1()
+                .border_color(theme.border)
+                // Still uploading: dimmed until it's on the service.
+                .when(!a.ready, |d| d.opacity(0.5))
+                .child(gpui::img(image).size_full()),
+        )
+    });
+    Some(div().flex().flex_wrap().gap(px(6.)).children(tiles).into_any_element())
 }
 
 fn paste_id() -> String {
@@ -606,6 +674,9 @@ pub fn composer(
                 .text_color(theme.text)
                 .child(field(&subject, widgets::input_colors(&theme), cx)),
         );
+    }
+    if let Some(strip) = pasted_strip(this, &view, window) {
+        column = column.child(strip);
     }
     column = column.child(editor(this, 140., cx));
     if let Some(preview) = view.link_preview.clone() {
