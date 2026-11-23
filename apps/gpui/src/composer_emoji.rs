@@ -61,11 +61,7 @@ impl Picker {
 }
 
 fn recent_path() -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(
-        std::path::PathBuf::from(home)
-            .join("Library/Application Support/oxide-gpui/composer-recent-emoji.txt"),
-    )
+    Some(crate::paths::support()?.join("composer-recent-emoji.txt"))
 }
 fn load_recent() -> Vec<String> {
     recent_path()

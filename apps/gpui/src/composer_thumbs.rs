@@ -192,8 +192,7 @@ mod disk {
     const MAX_FILES: usize = 4000;
 
     fn dir() -> Option<PathBuf> {
-        let home = std::env::var_os("HOME")?;
-        Some(PathBuf::from(home).join("Library/Caches/oxide-gpui/pictures"))
+        Some(crate::paths::caches()?.join("pictures"))
     }
     fn path(url: &str) -> Option<PathBuf> {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();

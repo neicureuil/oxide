@@ -25,6 +25,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 unicode-segmentation = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# Local recordings are named with the local date and time, as the macOS app names them.
+chrono = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
 # macOS services outside the window (platform.rs): Dock, banners, Quick Look, voicemail, network path.
 objc2 = "0.6"
 block2 = "0.6"
@@ -37,8 +41,6 @@ objc2-quick-look-ui = { version = "0.3", default-features = false, features = ["
 # Calls (call_*.rs, media_*.rs): video frames for GPUI's `surface`, as gpui itself takes them; LiveKitWebRTC through objc2 (build.rs links it).
 core-video = "0.4"
 core-foundation = "0.10"
-# Local recordings are named with the local date and time, as the macOS app names them.
-chrono = { workspace = true }
 
 [features]
 # The core's in-process fake services, behind `--demo`.

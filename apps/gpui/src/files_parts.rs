@@ -627,9 +627,7 @@ fn color_items(entry: &EntryView, theme: &Theme, cx: &mut Context<Oxide>) -> Vec
 
 /// Asks where to save `name`, in Downloads first, then downloads it there.
 pub fn download(key: String, name: String, cx: &mut Context<Oxide>) {
-    let dir = std::env::var_os("HOME")
-        .map(|home| std::path::Path::new(&home).join("Downloads"))
-        .unwrap_or_else(std::env::temp_dir);
+    let dir = crate::paths::downloads();
     let chosen = cx.prompt_for_new_path(&dir, Some(&name));
     cx.spawn(async move |this, cx| {
         if let Ok(Ok(Some(path))) = chosen.await {

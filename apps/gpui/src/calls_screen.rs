@@ -743,6 +743,7 @@ pub fn debug_step(
     window: &mut gpui::Window,
     cx: &mut Context<Oxide>,
 ) -> bool {
+    let _ = &window;
     let Some(arg) = step.strip_prefix("calls:") else {
         return false;
     };
@@ -775,6 +776,7 @@ pub fn debug_step(
             this.ui.calls.requested = Some(id.clone());
             send(this, CallsAction::PlayVoicemail { id });
         }
+        #[cfg(target_os = "macos")]
         "dial" => {
             let text = rest.to_owned();
             this.ui

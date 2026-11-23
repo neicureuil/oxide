@@ -7,6 +7,10 @@ use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=OXIDE_WEBRTC_FRAMEWORKS");
+    // Calls and their frameworks are macOS-only: other platforms build without them.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let folder = std::env::var_os("OXIDE_WEBRTC_FRAMEWORKS").map(PathBuf::from).unwrap_or_else(|| {
         manifest.join(

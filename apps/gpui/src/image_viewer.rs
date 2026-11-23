@@ -169,9 +169,7 @@ fn copy(picture: &RenderImage, cx: &mut Context<Oxide>) {
 
 /// Saved as PNG: the viewer holds the decoded picture, not the bytes Teams served.
 fn save(picture: Arc<RenderImage>, alt: &str, cx: &mut Context<Oxide>) {
-    let dir = std::env::var_os("HOME")
-        .map(|h| std::path::PathBuf::from(h).join("Downloads"))
-        .unwrap_or_default();
+    let dir = crate::paths::downloads();
     let answer = cx.prompt_for_new_path(&dir, Some(&file_name(alt)));
     cx.spawn(async move |_, _| {
         if let Ok(Ok(Some(path))) = answer.await

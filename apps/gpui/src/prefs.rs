@@ -42,8 +42,7 @@ pub struct Prefs {
 }
 
 fn path() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join("Library/Application Support/oxide-gpui/prefs.json"))
+    Some(crate::paths::support()?.join("prefs.json"))
 }
 
 impl Prefs {

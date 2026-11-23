@@ -1,57 +1,73 @@
 //! Misspelled words of the draft, from the system's spell checker, as AppKit's continuous spell checking underlines
 //! them in the macOS composer. The word being typed is left alone until the caret leaves it.
-use objc2::runtime::{AnyClass, AnyObject};
-use objc2::{Encode, Encoding, msg_send};
-use objc2_foundation::NSString;
+#[cfg(not(target_os = "macos"))]
 use std::ops::Range;
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct NSRange {
-    location: usize,
-    length: usize,
-}
-unsafe impl Encode for NSRange {
-    const ENCODING: Encoding = Encoding::Struct("_NSRange", &[usize::ENCODING, usize::ENCODING]);
+/// No system spell checker is called on other platforms yet.
+#[cfg(not(target_os = "macos"))]
+pub fn misspelled(_text: &str, _caret: usize) -> Vec<Range<usize>> {
+    Vec::new()
 }
 
-/// Byte ranges of the misspelled words of `text`, except the one holding `caret`; call it on the main thread.
-pub fn misspelled(text: &str, caret: usize) -> Vec<Range<usize>> {
-    let Some(class) = AnyClass::get(c"NSSpellChecker") else {
-        return Vec::new();
-    };
-    if text.trim().is_empty() {
-        return Vec::new();
+#[cfg(target_os = "macos")]
+pub use mac::misspelled;
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2::{Encode, Encoding, msg_send};
+    use objc2_foundation::NSString;
+    use std::ops::Range;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct NSRange {
+        location: usize,
+        length: usize,
     }
-    let units: Vec<u16> = text.encode_utf16().collect();
-    let string = NSString::from_str(text);
-    let mut found = Vec::new();
-    let mut start = 0usize;
-    unsafe {
-        let checker: *mut AnyObject = msg_send![class, sharedSpellChecker];
-        if checker.is_null() {
+    unsafe impl Encode for NSRange {
+        const ENCODING: Encoding =
+            Encoding::Struct("_NSRange", &[usize::ENCODING, usize::ENCODING]);
+    }
+
+    /// Byte ranges of the misspelled words of `text`, except the one holding `caret`; call it on the main thread.
+    pub fn misspelled(text: &str, caret: usize) -> Vec<Range<usize>> {
+        let Some(class) = AnyClass::get(c"NSSpellChecker") else {
+            return Vec::new();
+        };
+        if text.trim().is_empty() {
             return Vec::new();
         }
-        // The checker wraps around to the start: stop once it goes back.
-        while start < units.len() && found.len() < 200 {
-            let range: NSRange =
-                msg_send![checker, checkSpellingOfString: &*string, startingAt: start as isize];
-            if range.length == 0 || range.location == usize::MAX || range.location < start {
-                break;
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let string = NSString::from_str(text);
+        let mut found = Vec::new();
+        let mut start = 0usize;
+        unsafe {
+            let checker: *mut AnyObject = msg_send![class, sharedSpellChecker];
+            if checker.is_null() {
+                return Vec::new();
             }
-            found.push(range.location..range.location + range.length);
-            start = range.location + range.length;
+            // The checker wraps around to the start: stop once it goes back.
+            while start < units.len() && found.len() < 200 {
+                let range: NSRange =
+                    msg_send![checker, checkSpellingOfString: &*string, startingAt: start as isize];
+                if range.length == 0 || range.location == usize::MAX || range.location < start {
+                    break;
+                }
+                found.push(range.location..range.location + range.length);
+                start = range.location + range.length;
+            }
         }
+        let byte = |unit: usize| String::from_utf16_lossy(&units[..unit.min(units.len())]).len();
+        found
+            .into_iter()
+            .map(|r| byte(r.start)..byte(r.end))
+            .filter(|r| !(r.start <= caret && caret <= r.end))
+            .collect()
     }
-    let byte = |unit: usize| String::from_utf16_lossy(&units[..unit.min(units.len())]).len();
-    found
-        .into_iter()
-        .map(|r| byte(r.start)..byte(r.end))
-        .filter(|r| !(r.start <= caret && caret <= r.end))
-        .collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     #[test]
     fn finds_misspelled_words_but_not_the_one_being_typed() {

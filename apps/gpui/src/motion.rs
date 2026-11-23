@@ -35,6 +35,11 @@ pub fn reduced() -> bool {
 pub fn refresh_reduced() {
     REDUCED.with(|r| r.set(Some(read_reduced())));
 }
+#[cfg(not(target_os = "macos"))]
+fn read_reduced() -> bool {
+    false
+}
+#[cfg(target_os = "macos")]
 fn read_reduced() -> bool {
     let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
     // Not bound by objc2-app-kit's NSWorkspace feature set: ask the runtime directly.

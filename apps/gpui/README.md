@@ -31,6 +31,13 @@ DEMO=1 PROFILE=dev ./scripts/build-gpui-app.sh       # quick bundle with the dem
 - **Updates:** the update checker does not run at launch. The published releases are the SwiftUI app's.
 - **Calls:** real calls use the same LiveKitWebRTC framework as the SwiftUI app, called through the Objective-C runtime. They have only been tried in the demo.
 
+## Windows
+The workflow `.github/workflows/gpui-windows.yml` builds `Oxide.exe` for Windows on ARM on each push to `feature/gpui` (Actions tab, artifact "Oxide-GPUI-windows-arm64"). It is built on Windows because GPUI compiles its DirectX shaders with the SDK's `fxc.exe`. On Windows:
+- **Calls are not available.** They need LiveKit's WebRTC build for macOS, which is called through Objective-C.
+- **No banners, badge or spell checking.** Downloaded files open in their default app.
+- The session is kept in the Windows Credential Manager. Settings go in `%APPDATA%\oxide-gpui`, caches in `%LOCALAPPDATA%\oxide-gpui`, logs in `%LOCALAPPDATA%\Oxide\Logs`.
+- The exe is not signed, so SmartScreen asks for confirmation: More info, then Run anyway.
+
 ## Checking screens without clicking
 `OXIDE_SCRIPT` runs a step every 1.5 s after sign-in. The built-in steps are listed in `screens.rs`, and each module adds its own in its `debug_step`. `apps/gpui/tools/shot.sh` captures only the app's window:
 

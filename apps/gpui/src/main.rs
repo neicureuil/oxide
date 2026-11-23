@@ -1,6 +1,8 @@
 //! Oxide drawn with GPUI: the same headless `teams-core` as the macOS app, called directly instead of through UniFFI.
 // Screens are being ported one by one: shared helpers are not all used yet.
 #![allow(dead_code)]
+// No console window behind the app on Windows (debug builds keep it, for logs).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 mod activity;
 mod avatars;
 mod calendar;
@@ -9,13 +11,31 @@ mod calendar_details;
 mod calendar_editor;
 mod calendar_model;
 mod calendar_parts;
+#[cfg(target_os = "macos")]
 mod call_window;
+// Calls need LiveKit's macOS build: elsewhere a stand-in says they are not available.
+#[cfg(not(target_os = "macos"))]
+#[path = "call_unavailable.rs"]
+mod call_window;
+#[cfg(not(target_os = "macos"))]
+mod call_devices {
+    pub use crate::call_window::device_settings;
+}
+#[cfg(not(target_os = "macos"))]
+mod call_panel {
+    pub use crate::call_window::panel;
+}
+#[cfg(target_os = "macos")]
 mod call_alert;
+#[cfg(target_os = "macos")]
 mod call_devices;
+#[cfg(target_os = "macos")]
 mod call_panel;
 mod call_prefs;
 mod call_report;
+#[cfg(target_os = "macos")]
 mod call_share_picker;
+#[cfg(target_os = "macos")]
 mod call_stage;
 mod calls_screen;
 mod chat_admin;
@@ -40,23 +60,36 @@ mod icons;
 mod image_viewer;
 mod input;
 mod login_window;
+#[cfg(target_os = "macos")]
 mod media_devices;
+#[cfg(target_os = "macos")]
 mod media_engine;
+#[cfg(target_os = "macos")]
 mod media_objc;
+#[cfg(target_os = "macos")]
 mod media_recorder;
+#[cfg(target_os = "macos")]
 mod media_tester;
+#[cfg(target_os = "macos")]
 mod media_video;
+#[cfg(target_os = "macos")]
 mod media_webrtc;
 mod members;
 mod motion;
 mod new_chat;
 mod oxide;
+mod paths;
+#[cfg_attr(not(target_os = "macos"), path = "platform_other.rs")]
 mod platform;
 #[cfg(target_os = "macos")]
 mod platform_memory;
+#[cfg(target_os = "macos")]
 mod platform_app;
+#[cfg(target_os = "macos")]
 mod platform_media;
+#[cfg(target_os = "macos")]
 mod platform_network;
+#[cfg(target_os = "macos")]
 mod platform_notifications;
 mod prefs;
 mod screens;
@@ -93,8 +126,7 @@ fn main() {
     // GPUI keeps each picture twice, in memory and as a GPU texture: half the core's preview budget
     // keeps the total where the SwiftUI app's single copy is.
     teams_core::set_image_budget(32 << 20, 8 << 20);
-    if let Some(home) = std::env::var_os("HOME") {
-        let caches = std::path::Path::new(&home).join("Library/Caches/oxide-gpui");
+    if let Some(caches) = paths::caches() {
         teams_core::set_cache_directory(caches.to_string_lossy().into_owned());
     }
 
