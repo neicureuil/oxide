@@ -271,6 +271,12 @@ fn body(message: &Message) -> html::Document {
 /// Conversation events carry XML, not a body: a short sentence instead.
 pub(crate) fn system_summary(message: &Message) -> Option<String> {
     let kind = &message.messagetype;
+    // A meeting's recording and transcript: their content is a JSON or XML record, not a body.
+    match kind.as_str() {
+        "RichText/Media_CallRecording" => return Some(t("core.attachments.recording_available").into()),
+        "RichText/Media_CallTranscript" => return Some(t("core.attachments.transcript_available").into()),
+        _ => {}
+    }
     let event = kind
         .strip_prefix("ThreadActivity/")
         .or_else(|| kind.strip_prefix("Event/"))?;
@@ -316,6 +322,29 @@ fn with_previews(mut images: Vec<InlineImage>, files: &[Attachment]) -> Vec<Inli
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn recordings_and_transcripts_are_a_sentence_not_their_record() {
+        let message = |kind: &str, content: &str| Message {
+            messagetype: kind.into(),
+            content: content.into(),
+            ..Default::default()
+        };
+        let transcript = message(
+            "RichText/Media_CallTranscript",
+            r#"{"scopeId":"a","callId":"b","originatorParticipantId":"c"}"#,
+        );
+        assert_eq!(
+            system_summary(&transcript).as_deref(),
+            Some(t("core.attachments.transcript_available"))
+        );
+        let recording = message("RichText/Media_CallRecording", "<URIObject/>");
+        assert_eq!(
+            system_summary(&recording).as_deref(),
+            Some(t("core.attachments.recording_available"))
+        );
+        assert_eq!(system_summary(&message("RichText/Html", "<p>x</p>")), None);
+    }
+
     #[test]
     fn renderings_are_reused_until_the_body_files_or_cards_change() {
         let cache = Cache::default();

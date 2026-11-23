@@ -22,6 +22,8 @@ mod call_window;
 mod calls_screen;
 mod chat_admin;
 mod chats_parts;
+#[cfg(windows)]
+mod clipboard_bitmap;
 mod composer;
 mod composer_emoji;
 mod composer_extensions;
@@ -146,7 +148,9 @@ fn main() {
                 window_min_size: Some(size(px(960.), px(600.))),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Oxide".into()),
-                    appears_transparent: true,
+                    // macOS draws the traffic lights over our top bar. Windows keeps its own title bar: without it
+                    // GPUI leaves the window with no caption to drag and no buttons.
+                    appears_transparent: cfg!(target_os = "macos"),
                     traffic_light_position: Some(point(px(14.), px(14.))),
                 }),
                 ..Default::default()

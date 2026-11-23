@@ -408,7 +408,7 @@ pub fn overlay(
                 .text_color(theme.text)
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                     let key = event.keystroke.key.as_str();
-                    let cmd = event.keystroke.modifiers.platform;
+                    let cmd = event.keystroke.modifiers.secondary();
                     let zoom = this.ui.image_viewer.zoom;
                     match key {
                         "escape" => close(this, cx),

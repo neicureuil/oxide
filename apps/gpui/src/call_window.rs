@@ -359,7 +359,8 @@ fn key_down(this: &mut Oxide, event: &KeyDownEvent, _window: &mut Window, cx: &m
     let keystroke = &event.keystroke;
     let m = &keystroke.modifiers;
     let key = keystroke.key.as_str();
-    let command_shift = m.platform && m.shift && !m.control && !m.alt;
+    // ⌘⇧ on macOS, Ctrl+Shift elsewhere, as Teams does.
+    let command_shift = m.secondary() && m.shift && !m.alt && !(m.platform && m.control);
     if let Some(prejoin) = &part.prejoin {
         match key {
             "escape" => send(this, CallAction::CancelJoin),

@@ -20,18 +20,18 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         // Text fields bind their own Escape and ⌘C, which win while one has focus.
         KeyBinding::new("escape", DismissModal, None),
-        KeyBinding::new("cmd-c", CopySelection, None),
-        KeyBinding::new("cmd-a", SelectMessage, None),
-        KeyBinding::new("cmd-e", FocusSearch, None),
-        KeyBinding::new("cmd-n", NewChat, None),
-        KeyBinding::new("cmd-r", Refresh, None),
-        KeyBinding::new("cmd-1", GoActivity, None),
-        KeyBinding::new("cmd-2", GoChat, None),
-        KeyBinding::new("cmd-3", GoTeams, None),
-        KeyBinding::new("cmd-4", GoCalendar, None),
-        KeyBinding::new("cmd-5", GoCalls, None),
-        KeyBinding::new("cmd-6", GoFiles, None),
-        KeyBinding::new("cmd-,", GoSettings, None),
+        KeyBinding::new("secondary-c", CopySelection, None),
+        KeyBinding::new("secondary-a", SelectMessage, None),
+        KeyBinding::new("secondary-e", FocusSearch, None),
+        KeyBinding::new("secondary-n", NewChat, None),
+        KeyBinding::new("secondary-r", Refresh, None),
+        KeyBinding::new("secondary-1", GoActivity, None),
+        KeyBinding::new("secondary-2", GoChat, None),
+        KeyBinding::new("secondary-3", GoTeams, None),
+        KeyBinding::new("secondary-4", GoCalendar, None),
+        KeyBinding::new("secondary-5", GoCalls, None),
+        KeyBinding::new("secondary-6", GoFiles, None),
+        KeyBinding::new("secondary-,", GoSettings, None),
     ]);
 }
 
@@ -165,8 +165,8 @@ fn top_bar(this: &mut Oxide, shell: &Shell, window: &mut Window, cx: &mut Contex
         .flex()
         .items_center()
         .gap_4()
-        // Room for the traffic lights, drawn over the transparent title bar.
-        .pl(px(84.))
+        // Room for the traffic lights, drawn over the transparent title bar (macOS only).
+        .pl(px(if cfg!(target_os = "macos") { 84. } else { 16. }))
         .pr_4()
         .bg(theme.surface)
         .child(

@@ -24,7 +24,7 @@ phosphor-svgs = { version = "=0.6.0-pre.3", default-features = false, features =
 serde = { workspace = true }
 serde_json = { workspace = true }
 unicode-segmentation = "1"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # Local recordings are named with the local date and time, as the macOS app names them.
 chrono = { workspace = true }
 # Calls: our libwebrtc media engine on every platform, and its progress lines into calling.log.

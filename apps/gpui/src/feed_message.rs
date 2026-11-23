@@ -257,6 +257,9 @@ fn bubble_card(
     let (big, small) = (px(12.), px(4.));
     div()
         .min_w_0()
+        // Also on the bubble itself, not only its column: the list measures text against the widest it may be,
+        // and a long paragraph measured wider than it's drawn overlapped the rows below.
+        .max_w(px(if msg.mine { 560. } else { 600. }))
         .px(px(14.))
         .py(px(10.))
         .bg(if msg.mine {

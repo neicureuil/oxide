@@ -67,51 +67,69 @@ pub const IMAGE_CHARACTER: char = '\u{FFFC}';
 /// Drawn in its place: same UTF-8 length, so offsets still match the text.
 const IMAGE_STAND_IN: char = '\u{25A3}';
 
+/// `secondary` is ⌘ on macOS and Ctrl elsewhere (GPUI reads `cmd` as the Windows key there). Moving by word or
+/// line follows each system: ⌥ / ⌘ arrows on macOS, Ctrl arrows and Home / End elsewhere.
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
     cx.bind_keys([
         KeyBinding::new("backspace", Backspace, c),
-        KeyBinding::new("alt-backspace", BackspaceWord, c),
-        KeyBinding::new("cmd-backspace", BackspaceLine, c),
         KeyBinding::new("delete", Delete, c),
         KeyBinding::new("left", Left, c),
         KeyBinding::new("right", Right, c),
         KeyBinding::new("up", Up, c),
         KeyBinding::new("down", Down, c),
-        KeyBinding::new("alt-left", WordLeft, c),
-        KeyBinding::new("alt-right", WordRight, c),
         KeyBinding::new("shift-left", SelectLeft, c),
         KeyBinding::new("shift-right", SelectRight, c),
         KeyBinding::new("shift-up", SelectUp, c),
         KeyBinding::new("shift-down", SelectDown, c),
-        KeyBinding::new("alt-shift-left", SelectWordLeft, c),
-        KeyBinding::new("alt-shift-right", SelectWordRight, c),
-        KeyBinding::new("cmd-a", SelectAll, c),
-        KeyBinding::new("cmd-left", Home, c),
-        KeyBinding::new("cmd-right", End, c),
         KeyBinding::new("home", Home, c),
         KeyBinding::new("end", End, c),
+        KeyBinding::new("enter", Enter, c),
+        KeyBinding::new("shift-enter", Newline, c),
+        KeyBinding::new("alt-enter", Newline, c),
+        KeyBinding::new("secondary-enter", SubmitNow, c),
+        KeyBinding::new("escape", Escape, c),
+        KeyBinding::new("tab", Tab, c),
+        KeyBinding::new("secondary-a", SelectAll, c),
+        KeyBinding::new("secondary-v", Paste, c),
+        KeyBinding::new("secondary-c", Copy, c),
+        KeyBinding::new("secondary-x", Cut, c),
+        KeyBinding::new("secondary-z", Undo, c),
+        KeyBinding::new("secondary-shift-z", Redo, c),
+        KeyBinding::new("secondary-b", FormatBold, c),
+        KeyBinding::new("secondary-i", FormatItalic, c),
+        KeyBinding::new("secondary-u", FormatUnderline, c),
+        KeyBinding::new("secondary-shift-x", FormatStrike, c),
+        KeyBinding::new("secondary-k", FormatLink, c),
+    ]);
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([
+        KeyBinding::new("alt-backspace", BackspaceWord, c),
+        KeyBinding::new("cmd-backspace", BackspaceLine, c),
+        KeyBinding::new("alt-left", WordLeft, c),
+        KeyBinding::new("alt-right", WordRight, c),
+        KeyBinding::new("alt-shift-left", SelectWordLeft, c),
+        KeyBinding::new("alt-shift-right", SelectWordRight, c),
+        KeyBinding::new("cmd-left", Home, c),
+        KeyBinding::new("cmd-right", End, c),
         KeyBinding::new("cmd-shift-left", SelectHome, c),
         KeyBinding::new("cmd-shift-right", SelectEnd, c),
         KeyBinding::new("cmd-up", DocStart, c),
         KeyBinding::new("cmd-down", DocEnd, c),
-        KeyBinding::new("enter", Enter, c),
-        KeyBinding::new("shift-enter", Newline, c),
-        KeyBinding::new("alt-enter", Newline, c),
-        KeyBinding::new("cmd-enter", SubmitNow, c),
-        KeyBinding::new("escape", Escape, c),
-        KeyBinding::new("tab", Tab, c),
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, c),
-        KeyBinding::new("cmd-v", Paste, c),
-        KeyBinding::new("cmd-c", Copy, c),
-        KeyBinding::new("cmd-x", Cut, c),
-        KeyBinding::new("cmd-z", Undo, c),
-        KeyBinding::new("cmd-shift-z", Redo, c),
-        KeyBinding::new("cmd-b", FormatBold, c),
-        KeyBinding::new("cmd-i", FormatItalic, c),
-        KeyBinding::new("cmd-u", FormatUnderline, c),
-        KeyBinding::new("cmd-shift-x", FormatStrike, c),
-        KeyBinding::new("cmd-k", FormatLink, c),
+    ]);
+    #[cfg(not(target_os = "macos"))]
+    cx.bind_keys([
+        KeyBinding::new("ctrl-backspace", BackspaceWord, c),
+        KeyBinding::new("ctrl-left", WordLeft, c),
+        KeyBinding::new("ctrl-right", WordRight, c),
+        KeyBinding::new("ctrl-shift-left", SelectWordLeft, c),
+        KeyBinding::new("ctrl-shift-right", SelectWordRight, c),
+        KeyBinding::new("shift-home", SelectHome, c),
+        KeyBinding::new("shift-end", SelectEnd, c),
+        KeyBinding::new("ctrl-home", DocStart, c),
+        KeyBinding::new("ctrl-end", DocEnd, c),
+        KeyBinding::new("ctrl-y", Redo, c),
     ]);
 }
 
@@ -850,17 +868,24 @@ impl TextInput {
         w.show_character_palette();
     }
     fn paste(&mut self, _: &Paste, w: &mut Window, cx: &mut Context<Self>) {
-        let Some(item) = cx.read_from_clipboard() else {
-            return;
-        };
-        if let Some(text) = item.text() {
+        let item = cx.read_from_clipboard();
+        if let Some(text) = item.as_ref().and_then(|i| i.text()) {
             self.replace_text_in_range(None, &text, w, cx);
-        } else if self.rich
-            && let Some(image) = item.entries().iter().find_map(|e| match e {
+            return;
+        }
+        if !self.rich {
+            return;
+        }
+        let image = item.as_ref().and_then(|item| {
+            item.entries().iter().find_map(|e| match e {
                 ClipboardEntry::Image(image) => Some(image.clone()),
                 _ => None,
             })
-        {
+        });
+        // Windows: a picture offered only as a bitmap, which GPUI doesn't read.
+        #[cfg(windows)]
+        let image = image.or_else(crate::clipboard_bitmap::read_png);
+        if let Some(image) = image {
             cx.emit(RichEvent::PasteImage(image));
         }
     }

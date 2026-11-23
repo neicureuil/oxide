@@ -679,10 +679,18 @@
     "fr": "Des participants ont été ajoutés.",
     "en": "Participants were added."
   },
+  "core.attachments.recording_available": {
+    "fr": "Enregistrement disponible.",
+    "en": "Recording available."
+  },
   "core.attachments.shared_file": {
     "fr": "Fichier partagé",
     "en": "Shared file"
+  },  "core.attachments.transcript_available": {
+    "fr": "Transcription disponible.",
+    "en": "Transcript available."
   },
+
   "core.calendar.day_month": {
     "fr": "{day} {month}",
     "en": "{month} {day}"
