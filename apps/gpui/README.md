@@ -31,10 +31,16 @@ DEMO=1 PROFILE=dev ./scripts/build-gpui-app.sh       # quick bundle with the dem
 - **Updates:** the update checker does not run at launch. The published releases are the SwiftUI app's.
 - **Calls** run on our own media engine, `crates/teams-media` (libwebrtc), called directly from Rust: the same engine as the SwiftUI app, on macOS, Windows and Linux. Local recordings are `.m4a` on macOS and `.wav` elsewhere.
 
+## Builds
+The workflow `.github/workflows/gpui-build.yml` ("GPUI builds" in the Actions tab) builds the app for Windows (ARM64, x64), Linux (x64, ARM64) and macOS (ARM64): Run workflow, tick the systems, then download the artifacts "Oxide-GPUI-<system>-<arch>" (kept two weeks). A push to `feature/gpui` builds Windows ARM64 only. Each system builds on itself: Windows for the SDK's `fxc.exe` (DirectX shaders), Linux for clang 21 (libwebrtc), macOS for its frameworks.
+- Windows: `Oxide.exe`.
+- Linux: `oxide` in a `.tar.gz`. It needs WebKitGTK 4.1 (`libwebkit2gtk-4.1-0`) for the sign-in page, and Vulkan.
+- macOS: `OxideGPUI.app` zipped, signed ad hoc: the first launch is from the Finder's Open menu.
+
 ## Windows
-The workflow `.github/workflows/gpui-windows.yml` builds `Oxide.exe` for Windows on ARM on each push to `feature/gpui` (Actions tab, artifact "Oxide-GPUI-windows-arm64"). It is built on Windows because GPUI compiles its DirectX shaders with the SDK's `fxc.exe`. On Windows:
+On Windows:
 - **Calls** use the same engine as on macOS. The Settings page has no microphone test, chime or camera preview yet, and incoming calls ring without a sound.
-- **No banners, badge or spell checking.** Downloaded files open in their default app.
+- **Banners** are Windows notifications (a click opens the conversation, a call's buttons answer it). **No badge or spell checking.** Downloaded files open in their default app.
 - The session is kept in the Windows Credential Manager. Settings go in `%APPDATA%\oxide-gpui`, caches in `%LOCALAPPDATA%\oxide-gpui`, logs in `%LOCALAPPDATA%\Oxide\Logs`.
 - The exe is not signed, so SmartScreen asks for confirmation: More info, then Run anyway.
 

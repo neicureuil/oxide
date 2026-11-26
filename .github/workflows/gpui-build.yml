@@ -1,0 +1,186 @@
+# Builds the GPUI client (apps/gpui) to try it out, as workflow artifacts kept two weeks.
+# By hand (Actions › GPUI builds › Run workflow): tick the systems to build. A push to feature/gpui that touches
+# the Rust code builds Windows on ARM only.
+# Each system builds on itself: GPUI compiles its DirectX shaders with the Windows SDK's fxc.exe, libwebrtc
+# needs clang ≥ 21 on Linux, and the macOS app links Apple's frameworks.
+name: GPUI builds
+
+on:
+  push:
+    branches: [feature/gpui]
+    paths:
+      - "apps/gpui/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/gpui-build.yml"
+  workflow_dispatch:
+    inputs:
+      windows-arm64:
+        description: Windows ARM64
+        type: boolean
+        default: true
+      windows-x64:
+        description: Windows x64
+        type: boolean
+        default: false
+      linux-x64:
+        description: Linux x64
+        type: boolean
+        default: false
+      linux-arm64:
+        description: Linux ARM64
+        type: boolean
+        default: false
+      macos-arm64:
+        description: macOS ARM64
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpui-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The ticked targets as a matrix (a push builds Windows ARM64).
+  targets:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          WINDOWS_ARM64: ${{ inputs.windows-arm64 }}
+          WINDOWS_X64: ${{ inputs.windows-x64 }}
+          LINUX_X64: ${{ inputs.linux-x64 }}
+          LINUX_ARM64: ${{ inputs.linux-arm64 }}
+          MACOS_ARM64: ${{ inputs.macos-arm64 }}
+        run: |
+          all='[
+            {"name":"windows-arm64","os":"windows-11-arm","target":"aarch64-pc-windows-msvc","flag":"WINDOWS_ARM64"},
+            {"name":"windows-x64","os":"windows-2025","target":"x86_64-pc-windows-msvc","flag":"WINDOWS_X64"},
+            {"name":"linux-x64","os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","flag":"LINUX_X64"},
+            {"name":"linux-arm64","os":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu","flag":"LINUX_ARM64"},
+            {"name":"macos-arm64","os":"macos-26","target":"aarch64-apple-darwin","flag":"MACOS_ARM64"}
+          ]'
+          if [ "$EVENT" = push ]; then
+            WINDOWS_ARM64=true WINDOWS_X64=false LINUX_X64=false LINUX_ARM64=false MACOS_ARM64=false
+          fi
+          picked=$(echo "$all" | jq -c --arg w "$WINDOWS_ARM64" --arg x "$WINDOWS_X64" --arg lx "$LINUX_X64" \
+            --arg la "$LINUX_ARM64" --arg m "$MACOS_ARM64" \
+            '{"WINDOWS_ARM64":$w,"WINDOWS_X64":$x,"LINUX_X64":$lx,"LINUX_ARM64":$la,"MACOS_ARM64":$m} as $on
+             | map(select($on[.flag] == "true"))')
+          if [ "$picked" = "[]" ]; then echo "::error::No target ticked."; exit 1; fi
+          echo "matrix={\"include\":$picked}" >> "$GITHUB_OUTPUT"
+          echo "$picked" | jq -r '.[].name'
+
+  build:
+    needs: targets
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    env:
+      ARTIFACT: Oxide-GPUI-${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: gpui-${{ matrix.name }}
+
+      # ring and aws-lc build their C with clang on ARM64 Windows; GPUI's build looks for fxc.exe.
+      - name: Find clang and fxc
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $llvm = "C:\Program Files\LLVM\bin"
+          if (Test-Path "$llvm\clang.exe") { Add-Content $env:GITHUB_PATH $llvm; & "$llvm\clang.exe" --version }
+          $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
+          $kits = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+          $fxc = Get-ChildItem $kits -Recurse -Filter fxc.exe -ErrorAction SilentlyContinue |
+            Sort-Object { $_.FullName -notmatch "\\$arch\\" }, { $_.FullName } |
+            Select-Object -First 1
+          if (-not $fxc) { Write-Error "fxc.exe not found under $kits"; exit 1 }
+          Write-Host "fxc: $($fxc.FullName)"
+          Add-Content $env:GITHUB_ENV "GPUI_FXC_PATH=$($fxc.FullName)"
+
+      # libwebrtc's hermetic libc++ needs clang ≥ 21; GPUI draws through X11/Wayland and Vulkan, the sign-in
+      # page is WebKitGTK, capture and audio need the X11, DRM, PulseAudio/ALSA and V4L2 headers.
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libglib2.0-dev libx11-dev libxext-dev libxfixes-dev \
+            libxdamage-dev libxrandr-dev libxcomposite-dev libxtst-dev libgbm-dev libdrm-dev \
+            libpulse-dev libasound2-dev libva-dev libv4l-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libxcb-xkb-dev \
+            libfontconfig-dev libfreetype-dev libvulkan-dev libssl-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libdbus-1-dev
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash /tmp/llvm.sh 21
+          echo "CC=clang-21" >> "$GITHUB_ENV"
+          echo "CXX=clang++-21" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=/usr/lib/llvm-21/lib" >> "$GITHUB_ENV"
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        env:
+          # The C runtime linked in, as libwebrtc's is: nothing to install besides the app (WebView2 comes with
+          # Windows 11).
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build -p oxide-gpui --release --target ${{ matrix.target }}
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: cargo build -p oxide-gpui --release --target ${{ matrix.target }}
+
+      # The app bundle (Info.plist, icon, ad hoc signature) from the same script as local builds.
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: ./scripts/build-gpui-app.sh
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $out = "dist\$env:ARTIFACT"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\oxide-gpui.exe" "$out\Oxide.exe"
+          Copy-Item apps\gpui\README.md "$out\README.md"
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          out="dist/$ARTIFACT"
+          mkdir -p "$out" staging
+          cp "target/${{ matrix.target }}/release/oxide-gpui" staging/oxide
+          cp apps/gpui/README.md staging/
+          # In a tarball: the artifact's zip would drop the execute bit.
+          tar -czf "$out/oxide-gpui-${{ matrix.name }}.tar.gz" -C staging .
+
+      # Zipped with ditto: the artifact upload would drop the bundle's symlinks and execute bits.
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          out="dist/$ARTIFACT"
+          mkdir -p "$out"
+          ditto -c -k --keepParent target/OxideGPUI.app "$out/OxideGPUI.app.zip"
+          cp apps/gpui/README.md "$out/"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: dist/${{ env.ARTIFACT }}
+          retention-days: 14
