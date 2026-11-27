@@ -1,5 +1,7 @@
-//! "Check for updates" at the foot of Settings (Updater.swift), informational only: this build is not an
-//! Oxide.app bundle the updater could replace, so a newer release opens its GitHub page instead of installing.
+//! "Check for updates" at the foot of Settings (Updater.swift). A release carries this client as
+//! `Oxide-gpui-<version>-<system>-<arch>.zip` (holding `Oxide.exe` or `Oxide.app`) next to the macOS app's `Oxide-<version>.zip`:
+//! only a release with this system's file counts as an update, and the button downloads that file. Nothing is
+//! replaced in place yet.
 use crate::oxide::{Oxide, tr, trf};
 use crate::settings_controls::heading;
 use crate::widgets::{self, ButtonKind};
@@ -13,6 +15,24 @@ pub struct Release {
     pub version: String,
     pub notes: String,
     pub page: String,
+    /// This system's file in the release, if it has one.
+    pub download: Option<String>,
+}
+
+/// This build's file in the release of `version`: `Oxide-gpui-0.12.0-macos-arm64.zip`,
+/// `Oxide-gpui-0.12.0-windows-x64.zip`…
+pub fn asset_name(version: &str) -> String {
+    let system = match std::env::consts::OS {
+        "macos" => "macos",
+        "windows" => "windows",
+        other => other,
+    };
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        other => other,
+    };
+    format!("Oxide-gpui-{version}-{system}-{arch}.zip")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,8 +81,19 @@ pub fn parse_release(json: &[u8]) -> Option<Release> {
         .join("\n")
         .trim()
         .to_owned();
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    let wanted = asset_name(version);
+    let download = value
+        .get("assets")
+        .and_then(|a| a.as_array())
+        .into_iter()
+        .flatten()
+        .find(|a| a.get("name").and_then(|n| n.as_str()) == Some(wanted.as_str()))
+        .and_then(|a| a.get("browser_download_url")?.as_str())
+        .map(str::to_owned);
     Some(Release {
-        version: tag.strip_prefix('v').unwrap_or(tag).to_owned(),
+        download,
+        version: version.to_owned(),
         notes,
         page: value
             .get("html_url")
@@ -101,7 +132,11 @@ fn check(this: &mut Oxide, cx: &mut Context<Oxide>) {
         let result = cx.background_executor().spawn(async { fetch() }).await;
         let _ = this.update(cx, |this, cx| {
             this.ui.settings.update = match result {
-                Ok(release) if is_newer(&release.version, &teams_core::app_version()) => {
+                // A newer release without this system's build (only the macOS app's, say) is no update here.
+                Ok(release)
+                    if release.download.is_some()
+                        && is_newer(&release.version, &teams_core::app_version()) =>
+                {
                     UpdateState::Available(release)
                 }
                 Ok(_) => UpdateState::UpToDate,
@@ -169,7 +204,7 @@ pub fn row(this: &mut Oxide, cx: &mut Context<Oxide>) -> Option<AnyElement> {
     )
 }
 
-/// The release sheet: notes, and the release page to download it by hand.
+/// The release sheet: notes, and this system's file to download (else the release page).
 pub fn sheet(this: &mut Oxide, cx: &mut Context<Oxide>) -> Option<AnyElement> {
     let UpdateState::Prompt(release) = this.ui.settings.update.clone() else {
         return None;
@@ -178,7 +213,12 @@ pub fn sheet(this: &mut Oxide, cx: &mut Context<Oxide>) -> Option<AnyElement> {
     let kept = release.clone();
     let later =
         move |this: &mut Oxide| this.ui.settings.update = UpdateState::Available(kept.clone());
-    let page = release.page.clone();
+    let page = release.download.clone().unwrap_or_else(|| release.page.clone());
+    let open_label = tr(if release.download.is_some() {
+        "ui.updater.download"
+    } else {
+        "ui.updater.open_release_page"
+    });
     let content = div()
         .p(px(24.))
         .flex()
@@ -215,7 +255,7 @@ pub fn sheet(this: &mut Oxide, cx: &mut Context<Oxide>) -> Option<AnyElement> {
                     .child(release.notes.clone()),
             )
         })
-        .child(widgets::muted(tr("ui.updater.manual_install"), 12., &theme))
+        .child(widgets::muted(tr("ui.updater.gpui_install"), 12., &theme))
         .child(
             div()
                 .flex()
@@ -239,7 +279,7 @@ pub fn sheet(this: &mut Oxide, cx: &mut Context<Oxide>) -> Option<AnyElement> {
                 .child(
                     widgets::button(
                         "update-open",
-                        tr("ui.updater.open_release_page"),
+                        open_label,
                         ButtonKind::Primary,
                         &theme,
                     )
@@ -288,5 +328,22 @@ mod tests {
         assert_eq!(release.version, "0.12.0");
         assert_eq!(release.notes, "New\n- faster");
         assert!(release.page.ends_with("v0.12.0"));
+        assert_eq!(release.download, None);
+    }
+
+    #[test]
+    fn picks_this_systems_file() {
+        let name = asset_name("0.12.0");
+        assert!(name.starts_with("Oxide-gpui-0.12.0-"));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        assert_eq!(name, "Oxide-gpui-0.12.0-macos-arm64.zip");
+        let json = format!(
+            r#"{{"tag_name":"v0.12.0","html_url":"p","assets":[
+                {{"name":"Oxide-0.12.0.zip","browser_download_url":"https://e/zip"}},
+                {{"name":"Oxide-gpui-0.11.0-other-arch.zip","browser_download_url":"https://e/other"}},
+                {{"name":"{name}","browser_download_url":"https://e/mine"}}]}}"#
+        );
+        let release = parse_release(json.as_bytes()).unwrap();
+        assert_eq!(release.download.as_deref(), Some("https://e/mine"));
     }
 }

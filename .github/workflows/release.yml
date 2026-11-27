@@ -1,6 +1,8 @@
 # Cuts a release from main: bumps the version on a release/vX.Y.Z branch, tags it, builds Oxide.app,
 # creates a draft GitHub release, points the Homebrew cask at it and merges the branch into main through a pull request.
 # Run it by hand from the Actions tab on main, giving the new version (e.g. 0.4.0).
+# When the tag exists already (release-gpui.yml ran first), the app is built at that tag, nothing is bumped, and the
+# zip is added to the existing release (replaced if there) instead of creating one.
 name: Release
 
 on:
@@ -45,8 +47,9 @@ jobs:
             exit 1
           fi
           if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
-            echo "::error::Tag v$VERSION already exists."
-            exit 1
+            echo "created=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "created=true" >> "$GITHUB_OUTPUT"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
@@ -68,6 +71,7 @@ jobs:
 
       # The version lives in Cargo.toml's [workspace.package]; cargo update rewrites the workspace crates in Cargo.lock.
       - name: Bump the version and tag
+        if: steps.version.outputs.created == 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
           TAG: ${{ steps.version.outputs.tag }}
@@ -79,6 +83,13 @@ jobs:
           git commit -m "Bump version to $VERSION"
           git tag "$TAG"
           git push --atomic origin "release/$TAG" "refs/tags/$TAG"
+
+      # The version as released, with its own Cargo.toml.
+      - name: Check out the existing tag
+        if: steps.version.outputs.created == 'false'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: git checkout --detach "refs/tags/$TAG"
 
       # No SIGN_IDENTITY: the app is signed ad hoc.
       - name: Build Oxide.app
@@ -95,31 +106,50 @@ jobs:
           ditto -c -k --keepParent target/Oxide.app "Oxide-$VERSION.zip"
           echo "sha256=$(shasum -a 256 "Oxide-$VERSION.zip" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
-      # The install notes, then GitHub's changelog since the previous tag (--generate-notes appends it).
+      # The install notes, then GitHub's changelog since the previous tag (--generate-notes appends it). A release
+      # already there (from release-gpui.yml) keeps its notes and gets the zip.
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          sed "s/{{VERSION}}/$VERSION/g" .github/release-notes.md > notes.md
-          gh release create "$TAG" "Oxide-$VERSION.zip" \
-            --title "Oxide $VERSION" --notes-file notes.md --generate-notes --verify-tag --draft
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "Oxide-$VERSION.zip" --clobber
+            # The GPUI zips uploaded again, so they're listed after this one: versions of the app already installed
+            # take a release's first .zip.
+            mkdir -p gpui
+            gh release download "$TAG" --pattern 'Oxide-gpui-*' --dir gpui || true
+            if ls gpui/* >/dev/null 2>&1; then
+              gh release upload "$TAG" gpui/* --clobber
+            fi
+          else
+            sed "s/{{VERSION}}/$VERSION/g" .github/release-notes.md > notes.md
+            gh release create "$TAG" "Oxide-$VERSION.zip" \
+              --title "Oxide $VERSION" --notes-file notes.md --generate-notes --verify-tag --draft
+          fi
 
-      # The cask's URL only resolves once the draft is published.
+      # The cask's URL only resolves once the draft is published. For an existing tag, on a branch from main.
       - name: Point the Homebrew cask at the release
         env:
           VERSION: ${{ steps.version.outputs.version }}
           SHA256: ${{ steps.package.outputs.sha256 }}
           TAG: ${{ steps.version.outputs.tag }}
+          CREATED: ${{ steps.version.outputs.created }}
         run: |
+          BRANCH="release/$TAG"
+          if [ "$CREATED" != true ]; then
+            BRANCH="release/$TAG-cask"
+            git switch -c "$BRANCH" origin/main
+          fi
+          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
           sed -i '' \
             -e "s/^  version \".*\"/  version \"$VERSION\"/" \
             -e "s/^  sha256 \".*\"/  sha256 \"$SHA256\"/" \
             Casks/oxide.rb
           git add Casks/oxide.rb
           git commit -m "Point the Homebrew cask at the $VERSION release"
-          git push origin "release/$TAG"
+          git push origin "$BRANCH"
 
       # main only takes pull requests. A merge commit, not a rebase, keeps the tag on main's history.
       - name: Merge into main
@@ -128,7 +158,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          gh pr create --base main --head "release/$TAG" \
+          gh pr create --base main --head "$BRANCH" \
             --title "Release $VERSION" \
-            --body "Bumps the version to $VERSION (tagged $TAG) and points the Homebrew cask at the draft release."
-          gh pr merge "release/$TAG" --merge --delete-branch
+            --body "Points the Homebrew cask at the $VERSION draft release (tagged $TAG), bumping the version if new."
+          gh pr merge "$BRANCH" --merge --delete-branch

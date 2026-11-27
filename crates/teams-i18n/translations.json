@@ -6111,6 +6111,10 @@
     "fr": "Vous utilisez la version {version}.",
     "en": "You have version {version}."
   },
+  "ui.updater.download": {
+    "fr": "Télécharger",
+    "en": "Download"
+  },
   "ui.updater.downloading": {
     "fr": "Téléchargement…",
     "en": "Downloading…"
@@ -6118,6 +6122,10 @@
   "ui.updater.failed": {
     "fr": "La mise à jour a échoué : {detail}",
     "en": "The update failed: {detail}"
+  },
+  "ui.updater.gpui_install": {
+    "fr": "Téléchargez la nouvelle version et remplacez celle-ci par elle : l’app ne se met pas encore à jour toute seule.",
+    "en": "Download the new version and put it in place of this one: the app doesn't update itself yet."
   },
   "ui.updater.install": {
     "fr": "Installer et relancer",

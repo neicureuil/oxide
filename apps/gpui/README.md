@@ -31,11 +31,14 @@ DEMO=1 PROFILE=dev ./scripts/build-gpui-app.sh       # quick bundle with the dem
 - **Updates:** the update checker does not run at launch. The published releases are the SwiftUI app's.
 - **Calls** run on our own media engine, `crates/teams-media` (libwebrtc), called directly from Rust: the same engine as the SwiftUI app, on macOS, Windows and Linux. Local recordings are `.m4a` on macOS and `.wav` elsewhere.
 
-## Builds
-The workflow `.github/workflows/gpui-build.yml` ("GPUI builds" in the Actions tab) builds the app for Windows (ARM64, x64), Linux (x64, ARM64) and macOS (ARM64): Run workflow, tick the systems, then download the artifacts "Oxide-GPUI-<system>-<arch>" (kept two weeks). A push to `feature/gpui` builds Windows ARM64 only. Each system builds on itself: Windows for the SDK's `fxc.exe` (DirectX shaders), Linux for clang 21 (libwebrtc), macOS for its frameworks.
-- Windows: `Oxide.exe`.
-- Linux: `oxide` in a `.tar.gz`. It needs WebKitGTK 4.1 (`libwebkit2gtk-4.1-0`) for the sign-in page, and Vulkan.
-- macOS: `OxideGPUI.app` zipped, signed ad hoc: the first launch is from the Finder's Open menu.
+## Releases
+The workflow `.github/workflows/release-gpui.yml` ("Release GPUI" in the Actions tab) builds the app for a version and attaches it to that version's GitHub release, next to the SwiftUI app's `Oxide-<version>.zip`: Run workflow, give the version, tick Windows ARM64 and/or macOS ARM64.
+- If the tag is new, the version is bumped on a `release/vX.Y.Z` branch, tagged, and merged back into the branch the workflow ran on (as `release.yml` does with main). If it exists, this branch is built at that version.
+- The release is created as a draft when missing; otherwise the files are added to it. `release.yml` does the same, so either can run first.
+- Files, named like the SwiftUI app's `Oxide-<version>.zip`: `Oxide-gpui-<version>-windows-arm64.zip` holding `Oxide.exe`, and `Oxide-gpui-<version>-macos-arm64.zip` holding `Oxide.app` (signed ad hoc, bundle id `fr.neicureuil.oxide.gpui`). The SwiftUI app's updater, in versions already installed, takes a release's first `.zip`: `release.yml` uploads the GPUI zips again after its own so they're listed after it, and that updater refuses an app with another bundle id anyway.
+- Settings › Check for updates offers a version only when its release has this system's file, and downloads it; the app doesn't replace itself yet.
+
+Windows is built on Windows (GPUI compiles its DirectX shaders with the SDK's `fxc.exe`), macOS on a Mac.
 
 ## Windows
 On Windows:

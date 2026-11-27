@@ -20,8 +20,14 @@ struct Release: Decodable, Identifiable, Equatable {
     var id: String { tagName }
     /// "0.2.0" from "v0.2.0".
     var version: String { tagName.hasPrefix("v") ? String(tagName.dropFirst()) : tagName }
-    /// The app archive: `Oxide-<version>.zip` holding `Oxide.app` at its root.
-    var archive: Asset? { assets.first { $0.name.hasSuffix(".zip") } }
+    /// The app archive: `Oxide-<version>.zip` holding `Oxide.app` at its root. The release also carries the GPUI
+    /// client's files (`Oxide-gpui-…`), never taken for this app.
+    var archive: Asset? {
+        assets.first { $0.name == "Oxide-\(version).zip" }
+            ?? assets.first {
+                $0.name.hasPrefix("Oxide-") && !$0.name.hasPrefix("Oxide-gpui-") && $0.name.hasSuffix(".zip")
+            }
+    }
 
     /// The notes as inline Markdown: headings become bold lines, the rest is kept as written.
     var notes: AttributedString {
