@@ -42,6 +42,10 @@ log = { version = "0.4", optional = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3.6.3", features = ["apple-native"] }
 
+# The Windows Credential Manager, as the Keychain on macOS.
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6.3", features = ["windows-native"] }
+
 [features]
 # In-process fake Microsoft services behind `--demo`. Never in a release build.
 demo = ["dep:axum", "teams-calling/fake", "teams-realtime/fake"]

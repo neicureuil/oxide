@@ -177,19 +177,22 @@ impl<V: Vault> teams_auth::RefreshTokenStore for CoalescingStore<V> {
 }
 
 /// Refresh credentials live in the OS keychain, never in a workspace/config file.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct Keychain;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn keychain_entry() -> Result<keyring::Entry, AuthError> {
     keyring::Entry::new("oxide.microsoft", "current-account")
         .map_err(|_| AuthError::Failed(t("core.session.the_macos_keychain_is_unavailable").into()))
 }
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl Vault for Keychain {
     fn write(&self, token: &str) -> Result<(), AuthError> {
-        keychain_entry()?
-            .set_password(token)
-            .map_err(|_| AuthError::Failed(t("core.session.could_not_save_the_session_to").into()))
+        // Windows keeps a password as UTF-16, twice the size: as bytes, a refresh token fits its 2560-byte limit.
+        #[cfg(windows)]
+        let saved = keychain_entry()?.set_secret(token.as_bytes());
+        #[cfg(not(windows))]
+        let saved = keychain_entry()?.set_password(token);
+        saved.map_err(|_| AuthError::Failed(t("core.session.could_not_save_the_session_to").into()))
     }
     fn delete(&self) -> Result<(), AuthError> {
         match keychain_entry()?.delete_credential() {
@@ -200,15 +203,15 @@ impl Vault for Keychain {
         }
     }
 }
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const KEYCHAIN_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 pub fn remember(auth: &TeamsAuthenticator) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         auth.remember_session(Arc::new(CoalescingStore::new(Keychain, KEYCHAIN_DELAY)))
             .map_err(|e| e.to_string())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = auth;
         Err(t("core.session.saving_the_session_is_currently_only").into())
@@ -216,10 +219,19 @@ pub fn remember(auth: &TeamsAuthenticator) -> Result<(), String> {
 }
 pub async fn restore() -> Result<Option<Arc<TeamsAuthenticator>>, crate::error::CoreError> {
     use crate::error::CoreError;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         // The Keychain may wait on an access prompt: keep it off the network workers.
         let entry = keychain_entry().map_err(|e| e.to_string())?;
+        #[cfg(windows)]
+        let read = tokio::task::spawn_blocking(move || {
+            entry
+                .get_secret()
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        })
+        .await
+        .map_err(|_| t("core.session.could_not_read_the_session_from").to_owned())?;
+        #[cfg(not(windows))]
         let read = tokio::task::spawn_blocking(move || entry.get_password())
             .await
             .map_err(|_| t("core.session.could_not_read_the_session_from").to_owned())?;
@@ -244,7 +256,7 @@ pub async fn restore() -> Result<Option<Arc<TeamsAuthenticator>>, crate::error::
             Err(e) => Err(tf!("core.session.could_not_restore_the_session", error = e).into()),
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         Ok(None)
     }

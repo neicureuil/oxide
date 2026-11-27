@@ -1,0 +1,63 @@
+[package]
+name = "oxide-gpui"
+description = "Prototype of the Oxide client drawn with GPUI, on top of teams-core."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "oxide-gpui"
+path = "src/main.rs"
+
+[dependencies]
+teams-core = { path = "../../crates/teams-core" }
+# Shaders compiled at launch: building needs no Metal Toolchain (an optional Xcode download).
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+futures = "0.3"
+# Picker pictures from public CDNs, over kept-alive connections.
+reqwest = { workspace = true, features = ["blocking"] }
+# The Microsoft sign-in page in a native web view (WKWebView, WebView2, WebKitGTK).
+wry = "0.57"
+# Phosphor Icons (MIT), the app's icons on every platform.
+phosphor-svgs = { version = "=0.6.0-pre.3", default-features = false, features = ["str"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+unicode-segmentation = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# Local recordings are named with the local date and time, as the macOS app names them.
+chrono = { workspace = true }
+# Calls: our libwebrtc media engine on every platform, and its progress lines into calling.log.
+teams-media = { path = "../../crates/teams-media" }
+teams-calling = { path = "../../crates/teams-calling" }
+log = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS services outside the window (platform.rs): Dock, banners, Quick Look, voicemail, network path.
+objc2 = "0.6"
+block2 = "0.6"
+dispatch2 = "0.3"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSArray", "NSBundle", "NSData", "NSDate", "NSDictionary", "NSError", "NSNotification", "NSObject", "NSOperation", "NSSet", "NSString", "NSURL", "NSValue", "NSDistributedNotificationCenter"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSAccessibilityConstants", "NSApplication", "NSDockTile", "NSGraphics", "NSImage", "NSResponder", "NSRunningApplication", "NSSound", "NSWorkspace", "NSPanel", "NSWindow"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationAction", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter", "bitflags"] }
+objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "block2", "AVAudioPlayer"] }
+objc2-quick-look-ui = { version = "0.3", default-features = false, features = ["std", "QLPreviewPanel", "QLPreviewItem", "objc2-app-kit"] }
+# Video frames for GPUI's `surface` (CVPixelBuffer), as gpui itself takes them; AVFoundation's device tests.
+core-video = "0.4"
+core-foundation = "0.10"
+
+[features]
+# The core's in-process fake services, behind `--demo`.
+demo = ["teams-core/demo"]
+
+[target.'cfg(windows)'.dependencies]
+# Banners (WinRT toasts) and the identity they show, with the versions gpui already uses.
+windows = { version = "0.61", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading"] }
+windows-registry = "0.5"
+
+[build-dependencies]
+# The Windows icon (resources/oxide.rc), compiled into the exe.
+embed-resource = "3"
+
+[dev-dependencies]
+gpui = { version = "0.2.2", features = ["runtime_shaders", "test-support"] }

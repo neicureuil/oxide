@@ -611,8 +611,10 @@ impl App {
             *app.display_name = "John Doe".into();
         }
         if app.client.is_some() {
+            // Only the demo arrives here signed in; a real session starts these in `SignedIn`.
             Task::batch([
                 app.load_workspace(),
+                app.sync_realtime(),
                 app.sync_messaging(),
                 app.publish_presence_endpoint(),
             ])

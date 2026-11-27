@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/teams-auth", "crates/teams-chat", "crates/teams-calendar", "crates/teams-files", "crates/teams-calling", "crates/teams-realtime", "crates/teams-core", "crates/teams-probe", "crates/teams-i18n", "crates/teams-media", "crates/teams-media/libwebrtc", "crates/teams-media/webrtc-sys"]
+members = ["crates/teams-auth", "crates/teams-chat", "crates/teams-calendar", "crates/teams-files", "crates/teams-calling", "crates/teams-realtime", "crates/teams-core", "crates/teams-probe", "crates/teams-i18n", "crates/teams-media", "crates/teams-media/libwebrtc", "crates/teams-media/webrtc-sys", "apps/gpui"]
+# The GPUI prototype pulls in a whole UI toolkit: build it only when asked (`-p oxide-gpui`).
+default-members = ["crates/teams-auth", "crates/teams-chat", "crates/teams-calendar", "crates/teams-files", "crates/teams-calling", "crates/teams-realtime", "crates/teams-core", "crates/teams-probe", "crates/teams-i18n", "crates/teams-media", "crates/teams-media/libwebrtc", "crates/teams-media/webrtc-sys"]
 
 [workspace.package]
 version = "0.12.0"

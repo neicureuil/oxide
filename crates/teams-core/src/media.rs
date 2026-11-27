@@ -11,6 +11,27 @@ pub const MAX_IMAGES: usize = 48;
 pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 /// Of those, earlier conversations' previews: the disk cache brings back the others quickly.
 pub const RETAINED_BYTES: usize = 16 * 1024 * 1024;
+
+static IMAGE_BUDGET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(MAX_IMAGE_BYTES);
+static RETAINED_BUDGET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(RETAINED_BYTES);
+
+/// Decoded pixels the front end may hold: [`MAX_IMAGE_BYTES`] unless it set less.
+pub fn max_image_bytes() -> usize {
+    IMAGE_BUDGET.load(std::sync::atomic::Ordering::Relaxed)
+}
+/// Of those, earlier conversations' previews: [`RETAINED_BYTES`] unless the front end set less.
+pub fn retained_bytes() -> usize {
+    RETAINED_BUDGET.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Bounds the previews' decoded pixels: a front end keeping each picture twice (in memory and on the
+/// GPU, as GPUI does) halves the defaults to stay within the same total. Set before the core boots.
+#[uniffi::export]
+pub fn set_image_budget(total_bytes: u64, retained_bytes: u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    IMAGE_BUDGET.store(total_bytes as usize, Relaxed);
+    RETAINED_BUDGET.store((retained_bytes as usize).min(total_bytes as usize), Relaxed);
+}
 #[derive(Debug, Clone)]
 pub enum ImageState {
     Loading,

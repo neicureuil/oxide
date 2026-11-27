@@ -30,4 +30,17 @@ final class UpdaterTests: XCTestCase {
         XCTAssertEqual(release.archive?.digest?.hasPrefix("sha256:"), true)
         XCTAssertEqual(String(release.notes.characters), "Installation\n\n1. Download it.")
     }
+
+    /// The GPUI client's files in the same release, even listed first, are never this app's archive.
+    func testTakesOnlyItsOwnArchive() throws {
+        let json = """
+        {"tag_name":"v0.12.0","html_url":"https://github.com/neicureuil/oxide/releases/tag/v0.12.0","body":"",
+         "assets":[{"name":"Oxide-gpui-0.12.0-windows-arm64.zip","browser_download_url":"https://example.com/a","digest":null},
+                   {"name":"Oxide-gpui-0.12.0-macos-arm64.zip","browser_download_url":"https://example.com/b","digest":null},
+                   {"name":"Oxide-0.12.0.zip","browser_download_url":"https://example.com/c","digest":null}]}
+        """
+        XCTAssertEqual(try Updater.decode(Data(json.utf8)).archive?.name, "Oxide-0.12.0.zip")
+        let gpuiOnly = json.replacingOccurrences(of: "Oxide-0.12.0.zip", with: "readme.txt")
+        XCTAssertNil(try Updater.decode(Data(gpuiOnly.utf8)).archive)
+    }
 }

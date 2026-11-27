@@ -1,0 +1,2 @@
+// The app's icon: resource 1 is the one GPUI loads for its windows, and the first one Explorer shows.
+1 ICON "oxide.ico"

@@ -1564,6 +1564,14 @@ impl App {
     }
     /// The open conversation's chat messages, channel posts and thread replies.
     pub(crate) fn feed_views(&self) -> (Vec<MessageView>, Vec<PostView>, Vec<MessageView>) {
+        self.feed_views_for(None)
+    }
+    /// Same, only the items whose id is in `only` (a Rust front end asks for those it draws).
+    pub(crate) fn feed_views_for(
+        &self,
+        only: Option<&std::collections::HashSet<&str>>,
+    ) -> (Vec<MessageView>, Vec<PostView>, Vec<MessageView>) {
+        let wanted = |id: &str| only.is_none_or(|ids| ids.contains(id));
         let Some(selection) = &*self.selected else {
             return (vec![], vec![], vec![]);
         };
@@ -1573,6 +1581,7 @@ impl App {
         } else {
             let receipts = self.receipts_for(self.conv.messages());
             self.visible(self.conv.messages())
+                .filter(|m| wanted(&m.id))
                 .map(|m| {
                     let mut view = self.message_view(m);
                     view.receipt = receipts.get(&view.id).copied();
@@ -1582,6 +1591,7 @@ impl App {
         };
         let posts = if channel {
             self.visible_posts()
+                .filter(|(post, _)| wanted(&post.id))
                 .map(|(post, root)| PostView {
                     id: post.id.clone(),
                     root: self.message_view(root),
@@ -1594,6 +1604,7 @@ impl App {
         };
         let replies = if self.conv.reply().is_some() {
             self.visible(self.conv.replies())
+                .filter(|m| wanted(&m.id))
                 .map(|m| self.message_view(m))
                 .collect()
         } else {

@@ -1,4 +1,4 @@
-//! Local diagnostic logs in `~/Library/Logs/Oxide`, or `$OXIDE_LOG_DIR` (cargo runs, see `.cargo/config.toml`):
+//! Local diagnostic logs in `~/Library/Logs/Oxide` (`%LOCALAPPDATA%\Oxide\Logs` on Windows), or `$OXIDE_LOG_DIR` (cargo runs, see `.cargo/config.toml`):
 //! never tokens or message content.
 use std::io::Write;
 use std::sync::{OnceLock, mpsc};
@@ -33,6 +33,9 @@ impl Log {
 fn spawn_writer(name: &str) -> Option<mpsc::Sender<String>> {
     let directory = match std::env::var_os("OXIDE_LOG_DIR") {
         Some(directory) => std::path::PathBuf::from(directory),
+        #[cfg(windows)]
+        None => std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Oxide\\Logs"),
+        #[cfg(not(windows))]
         None => std::path::PathBuf::from(std::env::var_os("HOME")?).join("Library/Logs/Oxide"),
     };
     let path = directory.join(name);

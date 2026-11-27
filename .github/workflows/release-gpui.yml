@@ -1,0 +1,222 @@
+# Builds the GPUI client (apps/gpui) for a version and attaches it to that version's GitHub release:
+# `Oxide-gpui-<version>-<system>-<arch>` next to the macOS app's `Oxide-<version>.zip` (which keeps its name).
+# Run it by hand from the Actions tab, giving the version and ticking the systems.
+# - The tag doesn't exist yet: as release.yml, the version is bumped on a release/vX.Y.Z branch from the branch
+#   this runs on, tagged, and merged back into that branch through a pull request.
+# - The tag exists (Release Swift ran first): this branch is built at that version, nothing is bumped.
+# The release is created as a draft when missing; otherwise the files are added to it (replaced if there).
+name: Release GPUI
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, without the v (e.g. 0.12.0)
+        type: string
+        required: true
+      windows-arm64:
+        description: Windows ARM64
+        type: boolean
+        default: true
+      macos-arm64:
+        description: macOS ARM64
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Shared with release.yml: never two jobs on the same version or release at once.
+concurrency: release
+
+jobs:
+  # Checks the version, bumps and tags it when new, and picks the targets.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      created: ${{ steps.version.outputs.created }}
+      ref: ${{ steps.version.outputs.ref }}
+      matrix: ${{ steps.targets.outputs.matrix }}
+    steps:
+      - name: Pick the targets
+        id: targets
+        env:
+          WINDOWS_ARM64: ${{ inputs.windows-arm64 }}
+          MACOS_ARM64: ${{ inputs.macos-arm64 }}
+        run: |
+          picked=$(jq -nc --arg w "$WINDOWS_ARM64" --arg m "$MACOS_ARM64" '[
+            {"name":"windows-arm64","os":"windows-11-arm","target":"aarch64-pc-windows-msvc","on":$w},
+            {"name":"macos-arm64","os":"macos-26","target":"aarch64-apple-darwin","on":$m}
+          ] | map(select(.on == "true") | del(.on))')
+          if [ "$picked" = "[]" ]; then echo "::error::No target ticked."; exit 1; fi
+          echo "matrix={\"include\":$picked}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check the version
+        id: version
+        env:
+          INPUT: ${{ inputs.version }}
+        run: |
+          VERSION="${INPUT#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version '$INPUT' is not X.Y.Z."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            # This branch's code, built under the existing version (the tag may be on main, without apps/gpui).
+            echo "ref=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "created=true" >> "$GITHUB_OUTPUT"
+            echo "ref=refs/tags/v$VERSION" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.version.outputs.created == 'true'
+
+      # As release.yml: the version lives in Cargo.toml's [workspace.package]; cargo update rewrites Cargo.lock.
+      - name: Bump the version and tag
+        if: steps.version.outputs.created == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          sed -i "/^\[workspace.package\]/,/^\[/s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          cargo update --workspace
+          git switch -c "release/$TAG"
+          git add Cargo.toml Cargo.lock
+          git commit -m "Bump version to $VERSION"
+          git tag "$TAG"
+          git push --atomic origin "release/$TAG" "refs/tags/$TAG"
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.version.outputs.matrix) }}
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ASSET: Oxide-gpui-${{ needs.version.outputs.version }}-${{ matrix.name }}
+    steps:
+      # Full history: the macOS bundle's build number counts commits.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.ref }}
+          fetch-depth: 0
+
+      # The app reports this version (and its updater compares with it), whichever commit is built.
+      - name: Set the version
+        shell: bash
+        run: |
+          sed -i.bak "/^\[workspace.package\]/,/^\[/s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          rm Cargo.toml.bak
+          grep -A1 '^\[workspace.package\]' Cargo.toml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-gpui-${{ matrix.name }}
+
+      # ring and aws-lc build their C with clang on ARM64 Windows; GPUI's build looks for fxc.exe.
+      - name: Find clang and fxc
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $llvm = "C:\Program Files\LLVM\bin"
+          if (Test-Path "$llvm\clang.exe") { Add-Content $env:GITHUB_PATH $llvm; & "$llvm\clang.exe" --version }
+          $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
+          $kits = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+          $fxc = Get-ChildItem $kits -Recurse -Filter fxc.exe -ErrorAction SilentlyContinue |
+            Sort-Object { $_.FullName -notmatch "\\$arch\\" }, { $_.FullName } |
+            Select-Object -First 1
+          if (-not $fxc) { Write-Error "fxc.exe not found under $kits"; exit 1 }
+          Write-Host "fxc: $($fxc.FullName)"
+          Add-Content $env:GITHUB_ENV "GPUI_FXC_PATH=$($fxc.FullName)"
+
+      # The C runtime linked in, as libwebrtc's is: nothing to install besides the exe (WebView2 comes with
+      # Windows 11). Zipped as Oxide.exe, as the macOS zip holds Oxide.app.
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          cargo build -p oxide-gpui --release --target ${{ matrix.target }}
+          New-Item -ItemType Directory -Force staging, dist | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\oxide-gpui.exe" staging\Oxide.exe
+          Compress-Archive -Path staging\Oxide.exe -DestinationPath "dist\$env:ASSET.zip"
+
+      # The bundle (Info.plist, icon, ad hoc signature) from the same script as local builds, zipped by ditto as
+      # Oxide.app, as release.yml zips the SwiftUI app (the folder's name isn't part of the signature).
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          ./scripts/build-gpui-app.sh
+          mkdir -p staging dist
+          ditto target/OxideGPUI.app staging/Oxide.app
+          codesign --verify --deep --strict staging/Oxide.app
+          codesign -dvv staging/Oxide.app 2>&1 | grep -q '^Signature=adhoc$'
+          ditto -c -k --keepParent staging/Oxide.app "dist/$ASSET.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: dist/*
+          retention-days: 7
+
+  # Adds the files to the release (a draft created here when missing), then merges a new version's branch back.
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update the release
+        run: |
+          ls -l dist
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            # The GPUI section once, after the notes the release already has.
+            body=$(gh release view "$TAG" --json body --jq .body)
+            if ! grep -q '^## Oxide GPUI' <<<"$body"; then
+              { printf '%s\n' "$body"; sed "s/{{VERSION}}/$VERSION/g" .github/release-notes-gpui.md; } > notes.md
+              gh release edit "$TAG" --notes-file notes.md
+            fi
+          else
+            sed "s/{{VERSION}}/$VERSION/g" .github/release-notes.md .github/release-notes-gpui.md > notes.md
+            gh release create "$TAG" dist/* \
+              --title "Oxide $VERSION" --notes-file notes.md --generate-notes --verify-tag --draft
+          fi
+
+      # As release.yml merges into main: back into the branch this ran from.
+      - name: Merge the version into ${{ github.ref_name }}
+        if: needs.version.outputs.created == 'true'
+        run: |
+          gh pr create --base "$GITHUB_REF_NAME" --head "release/$TAG" \
+            --title "Release $VERSION" \
+            --body "Bumps the version to $VERSION (tagged $TAG) for the GPUI builds of the draft release."
+          gh pr merge "release/$TAG" --merge --delete-branch
