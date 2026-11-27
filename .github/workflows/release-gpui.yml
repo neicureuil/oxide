@@ -3,7 +3,7 @@
 # Run it by hand from the Actions tab, giving the version and ticking the systems.
 # - The tag doesn't exist yet: as release.yml, the version is bumped on a release/vX.Y.Z branch from the branch
 #   this runs on, tagged, and merged back into that branch through a pull request.
-# - The tag exists (Release ran first): this branch is built at that version, nothing is bumped.
+# - The tag exists (Release Swift ran first): this branch is built at that version, nothing is bumped.
 # The release is created as a draft when missing; otherwise the files are added to it (replaced if there).
 name: Release GPUI
 

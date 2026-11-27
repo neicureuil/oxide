@@ -3,7 +3,7 @@
 # Run it by hand from the Actions tab on main, giving the new version (e.g. 0.4.0).
 # When the tag exists already (release-gpui.yml ran first), the app is built at that tag, nothing is bumped, and the
 # zip is added to the existing release (replaced if there) instead of creating one.
-name: Release
+name: Release Swift
 
 on:
   workflow_dispatch:
